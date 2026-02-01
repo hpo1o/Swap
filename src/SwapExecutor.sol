@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import { Pool } from "./Pool.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Pool} from "./Pool.sol";
 
 contract SwapExecutor {
     using SafeERC20 for IERC20;
@@ -11,14 +11,10 @@ contract SwapExecutor {
     uint256 public constant EXECUTOR_FEE_BPS = 10; // 0.1% комиссия
 
     /// @notice Выполняет свап, автоматически разбивая на безопасные чанки
-    function executeAutoChunkedSwap(
-        Pool pool,
-        address tokenIn,
-        uint256 totalAmountIn,
-        uint256 minTotalOut,
-        address to
-    ) external returns (uint256 totalOut) {
-
+    function executeAutoChunkedSwap(Pool pool, address tokenIn, uint256 totalAmountIn, uint256 minTotalOut, address to)
+        external
+        returns (uint256 totalOut)
+    {
         // 1️⃣ Получаем резервы пула
         (uint256 reserve0, uint256 reserve1) = pool.getReserves();
         uint256 reserveIn = tokenIn == address(pool.token0()) ? reserve0 : reserve1;
@@ -55,8 +51,8 @@ contract SwapExecutor {
         // 🔹 Правильное приведение типов
         IERC20 tokenOutERC20 = pool.tokenOut(tokenIn); // pool.tokenOut возвращает IERC20
 
-        tokenOutERC20.safeTransfer(msg.sender, fee);           // комиссия
-        tokenOutERC20.safeTransfer(to, totalOut - fee);        // остаток пользователю
+        tokenOutERC20.safeTransfer(msg.sender, fee); // комиссия
+        tokenOutERC20.safeTransfer(to, totalOut - fee); // остаток пользователю
 
         return totalOut;
     }

@@ -15,14 +15,11 @@ library SwapMath {
         if (amountIn == 0) revert InsufficientInputAmount();
         if (reserveIn == 0 || reserveOut == 0) revert InsufficientLiquidity();
 
-        uint256 amountInWithFee =
-            amountIn * (10_000 - feeBps);
+        uint256 amountInWithFee = amountIn * (10_000 - feeBps);
 
-        uint256 numerator =
-            amountInWithFee * reserveOut;
+        uint256 numerator = amountInWithFee * reserveOut;
 
-        uint256 denominator =
-            reserveIn * 10_000 + amountInWithFee;
+        uint256 denominator = reserveIn * 10_000 + amountInWithFee;
 
         amountOut = numerator / denominator;
     }

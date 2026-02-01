@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /// @title Pool — базовый AMM-пул для двух токенов
 /// @notice Безопасный пул для тестов и портфолио, с фиксированной комиссией
@@ -18,13 +18,7 @@ contract Pool {
     uint256 public constant FEE_BPS = 30; // 0.3%
     uint256 public constant BPS_DENOM = 10_000;
 
-    event Swap(
-        address indexed sender,
-        address tokenIn,
-        uint256 amountIn,
-        uint256 amountOut,
-        address indexed to
-    );
+    event Swap(address indexed sender, address tokenIn, uint256 amountIn, uint256 amountOut, address indexed to);
 
     constructor(address _token0, address _token1) {
         require(_token0 != _token1, "IDENTICAL_ADDRESSES");
@@ -43,16 +37,12 @@ contract Pool {
     /// @param minAmountOut минимальное количество токена, которое пользователь хочет получить
     /// @param to адрес, на который отправить output токен
     /// @return amountOut количество полученного токена
-    function swap(
-        address tokenIn,
-        uint256 amountIn,
-        uint256 minAmountOut,
-        address to
-    ) external returns (uint256 amountOut) {
+    function swap(address tokenIn, uint256 amountIn, uint256 minAmountOut, address to)
+        external
+        returns (uint256 amountOut)
+    {
         bool zeroForOne = tokenIn == address(token0);
-        (uint256 reserveIn, uint256 reserveOut) = zeroForOne
-            ? (reserve0, reserve1)
-            : (reserve1, reserve0);
+        (uint256 reserveIn, uint256 reserveOut) = zeroForOne ? (reserve0, reserve1) : (reserve1, reserve0);
 
         require(amountIn > 0, "ZERO_AMOUNT");
 
@@ -87,11 +77,11 @@ contract Pool {
     }
 
     /// @dev Базовая формула AMM x*y=k
-    function getAmountOut(
-        uint256 amountInWithFee,
-        uint256 reserveIn,
-        uint256 reserveOut
-    ) internal pure returns (uint256 amountOut) {
+    function getAmountOut(uint256 amountInWithFee, uint256 reserveIn, uint256 reserveOut)
+        internal
+        pure
+        returns (uint256 amountOut)
+    {
         require(reserveIn > 0 && reserveOut > 0, "NO_LIQUIDITY");
         amountOut = (amountInWithFee * reserveOut) / (reserveIn + amountInWithFee);
     }
