@@ -6,7 +6,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {
     AggregatorV3Interface
-} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+} from "./interfaces/AggregatorV3Interface.sol";
 import {Pool} from "./Pool.sol";
 
 contract SwapExecutor is ReentrancyGuard {
