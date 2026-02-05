@@ -308,5 +308,44 @@ contract SwapExecutorTest is Test {
         );
 
         vm.stopPrank();
+
+        uint256 expectedFee = (totalOut * executor.EXECUTOR_FEE_BPS()) / 10_000;
+        assertEq(tokenB.balanceOf(feeCollector), expectedFee, "fee recipient must receive fee");
+    }
+
+    function testExecutorSpendsEntireInputWithRemainder() public {
+        uint256 amountIn = 33_333e18;
+
+        tokenA.mint(user, amountIn);
+
+        vm.startPrank(user);
+        tokenA.approve(address(executor), amountIn);
+
+        executor.executeAutoChunkedSwap(
+            pool,
+            address(tokenA),
+            amountIn,
+            1,
+            user,
+            block.timestamp + 1 hours
+        );
+
+        vm.stopPrank();
+
+        assertEq(
+            tokenA.balanceOf(address(executor)),
+            0,
+            "executor should not keep input token remainder"
+        );
+    }
+
+    function testExecutorRevertsOnExpiredDeadline() public {
+        vm.startPrank(user);
+        tokenA.approve(address(executor), 1e18);
+
+        vm.expectRevert(bytes("EXPIRED"));
+        executor.executeAutoChunkedSwap(pool, address(tokenA), 1e18, 0, user, block.timestamp - 1);
+
+        vm.stopPrank();
     }
 }
