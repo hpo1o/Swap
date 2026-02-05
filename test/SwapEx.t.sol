@@ -5,7 +5,9 @@ import "forge-std/Test.sol";
 import "../src/Pool.sol";
 import "../src/SwapExecutor.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import {
+    AggregatorV3Interface
+} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
 contract MockToken is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {}

@@ -4,7 +4,9 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import {
+    AggregatorV3Interface
+} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import {Pool} from "./Pool.sol";
 
 contract SwapExecutor is ReentrancyGuard {
@@ -99,7 +101,8 @@ contract SwapExecutor is ReentrancyGuard {
         uint256 oracleTwapPriceX18 = _chainlinkTwapX18(oracleTwapInterval, maxOracleDelay);
         uint256 spotPriceX18 = pool.getSpotPrice(token0);
 
-        uint256 deviationBps = _absDiff(spotPriceX18, oracleTwapPriceX18) * BPS_DENOM / oracleTwapPriceX18;
+        uint256 deviationBps =
+            _absDiff(spotPriceX18, oracleTwapPriceX18) * BPS_DENOM / oracleTwapPriceX18;
         require(deviationBps <= maxPriceDeviationBps, "PRICE_DEVIATION_TOO_HIGH");
 
         (uint256 reserve0, uint256 reserve1) = pool.getReserves();
@@ -131,7 +134,8 @@ contract SwapExecutor is ReentrancyGuard {
             ? (totalAmountIn * oracleTwapPriceX18) / 1e18
             : (totalAmountIn * 1e18) / oracleTwapPriceX18;
 
-        uint256 minAcceptableOutByTwap = (twapExpectedOut * (BPS_DENOM - maxTwapSlippageBps)) / BPS_DENOM;
+        uint256 minAcceptableOutByTwap =
+            (twapExpectedOut * (BPS_DENOM - maxTwapSlippageBps)) / BPS_DENOM;
         require(totalOut >= minAcceptableOutByTwap, "TWAP_SLIPPAGE_TOO_HIGH");
 
         uint256 fee = (totalOut * EXECUTOR_FEE_BPS) / BPS_DENOM;
