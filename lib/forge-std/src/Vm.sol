@@ -340,7 +340,7 @@ interface VmSafe {
         bytes32[] storageKeys;
     }
 
-    // ======== Crypto ========
+    // -------- Crypto --------
 
     /// Derives a private key from the name, labels the account with that name, and returns the wallet.
     function createWallet(string calldata walletLabel) external returns (Wallet memory wallet);
@@ -453,7 +453,7 @@ interface VmSafe {
     /// Raises error if none of the signers passed into the script have provided address.
     function sign(address signer, bytes32 digest) external pure returns (uint8 v, bytes32 r, bytes32 s);
 
-    // ======== Environment ========
+    // -------- Environment --------
 
     /// Gets the environment variable `name` and parses it as `address`.
     /// Reverts if the variable was not found or could not be parsed.
@@ -614,7 +614,7 @@ interface VmSafe {
     /// Sets environment variables.
     function setEnv(string calldata name, string calldata value) external;
 
-    // ======== EVM ========
+    // -------- EVM --------
 
     /// Gets all accessed reads and write slot from a `vm.record` session, for a given address.
     function accesses(address target) external view returns (bytes32[] memory readSlots, bytes32[] memory writeSlots);
@@ -753,7 +753,7 @@ interface VmSafe {
     /// Stops recording storage reads and writes.
     function stopRecord() external;
 
-    // ======== Filesystem ========
+    // -------- Filesystem --------
 
     /// Closes file for reading, resetting the offset and allowing to read it from beginning with readLine.
     /// `path` is relative to the project root.
@@ -976,7 +976,7 @@ interface VmSafe {
     /// `path` is relative to the project root.
     function writeLine(string calldata path, string calldata data) external;
 
-    // ======== JSON ========
+    // -------- JSON --------
 
     /// Checks if `key` exists in a JSON object.
     function keyExistsJson(string calldata json, string calldata key) external view returns (bool);
@@ -1152,7 +1152,7 @@ interface VmSafe {
     /// `keyExists` is being deprecated in favor of `keyExistsJson`. It will be removed in future versions.
     function keyExists(string calldata json, string calldata key) external view returns (bool);
 
-    // ======== Scripting ========
+    // -------- Scripting --------
 
     /// Attach an EIP-4844 blob to the next call
     function attachBlob(bytes calldata blob) external;
@@ -1232,7 +1232,7 @@ interface VmSafe {
     /// Stops collecting onchain transactions.
     function stopBroadcast() external;
 
-    // ======== String ========
+    // -------- String --------
 
     /// Returns true if `search` is found in `subject`, false otherwise.
     function contains(string calldata subject, string calldata search) external pure returns (bool result);
@@ -1296,7 +1296,7 @@ interface VmSafe {
     /// Trims leading and trailing whitespace from the given `string` value.
     function trim(string calldata input) external pure returns (string memory output);
 
-    // ======== Testing ========
+    // -------- Testing --------
 
     /// Compares two `uint256` values. Expects difference to be less than or equal to `maxDelta`.
     /// Formats values with decimals in failure message.
@@ -1784,7 +1784,7 @@ interface VmSafe {
     /// Suspends execution of the main thread for `duration` milliseconds.
     function sleep(uint256 duration) external;
 
-    // ======== Toml ========
+    // -------- Toml --------
 
     /// Checks if `key` exists in a TOML table.
     function keyExistsToml(string calldata toml, string calldata key) external view returns (bool);
@@ -1863,7 +1863,7 @@ interface VmSafe {
     /// This cheatcode will create new keys if they didn't previously exist.
     function writeToml(string calldata json, string calldata path, string calldata valueKey) external;
 
-    // ======== Utilities ========
+    // -------- Utilities --------
 
     /// Returns an uint256 value bounded in given range and different from the current one.
     function bound(uint256 current, uint256 min, uint256 max) external view returns (uint256);
@@ -2014,7 +2014,7 @@ interface VmSafe {
 /// The `Vm` interface does allow manipulation of the EVM state. These are all intended to be used
 /// in tests, but it is not recommended to use these cheats in scripts.
 interface Vm is VmSafe {
-    // ======== EVM ========
+    // -------- EVM --------
 
     /// Utility cheatcode to set an EIP-2930 access list for all subsequent transactions.
     function accessList(AccessListItem[] calldata access) external;
@@ -2334,7 +2334,7 @@ interface Vm is VmSafe {
     /// `snapshot` is being deprecated in favor of `snapshotState`. It will be removed in future versions.
     function snapshot() external returns (uint256 snapshotId);
 
-    // ======== Testing ========
+    // -------- Testing --------
 
     /// Expect a call to an address with the specified `msg.value` and calldata, and a *minimum* amount of gas.
     function expectCallMinGas(address callee, uint256 msgValue, uint64 minGas, bytes calldata data) external;
@@ -2487,7 +2487,7 @@ interface Vm is VmSafe {
     /// Stops all safe memory expectation in the current subcontext.
     function stopExpectSafeMemory() external;
 
-    // ======== Utilities ========
+    // -------- Utilities --------
 
     /// Causes the next contract creation (via new) to fail and return its initcode in the returndata buffer.
     /// This allows type-safe access to the initcode payload that would be used for contract creation.
