@@ -309,4 +309,177 @@ contract SwapExecutorTest is Test {
 
         vm.stopPrank();
     }
+
+    function testPoolSwapRevertsForInvalidTokenIn() public {
+        tokenC.mint(user, 1e18);
+
+        vm.startPrank(user);
+        tokenC.approve(address(pool), 1e18);
+
+        vm.expectRevert(bytes("INVALID_TOKEN_IN"));
+        pool.swap(address(tokenC), 1e18, 0, user, block.timestamp + 1 hours);
+
+        vm.stopPrank();
+    }
+
+    function testExecutorSendsFeeToFeeCollector() public {
+        vm.startPrank(user);
+        tokenA.approve(address(executor), 500e18);
+
+        uint256 totalOut = executor.executeAutoChunkedSwap(
+            pool,
+            address(tokenA),
+            500e18,
+            1,
+            user,
+            block.timestamp + 1 hours
+        );
+
+        vm.stopPrank();
+
+        uint256 expectedFee = (totalOut * executor.EXECUTOR_FEE_BPS()) / 10_000;
+        assertEq(tokenB.balanceOf(feeCollector), expectedFee, "fee recipient must receive fee");
+    }
+
+    function testExecutorSpendsEntireInputWithRemainder() public {
+        uint256 amountIn = 33_333e18;
+
+        tokenA.mint(user, amountIn);
+
+        vm.startPrank(user);
+        tokenA.approve(address(executor), amountIn);
+
+        executor.executeAutoChunkedSwap(
+            pool,
+            address(tokenA),
+            amountIn,
+            1,
+            user,
+            block.timestamp + 1 hours
+        );
+
+        vm.stopPrank();
+
+        assertEq(
+            tokenA.balanceOf(address(executor)),
+            0,
+            "executor should not keep input token remainder"
+        );
+    }
+
+    function testExecutorRevertsOnExpiredDeadline() public {
+        vm.startPrank(user);
+        tokenA.approve(address(executor), 1e18);
+
+        vm.expectRevert(bytes("EXPIRED"));
+        executor.executeAutoChunkedSwap(pool, address(tokenA), 1e18, 0, user, block.timestamp - 1);
+
+        vm.stopPrank();
+    }
+
+    function testExecutorBlocksSwapOnSpotDeviationAgainstChainlinkTwap() public {
+        tokenA.mint(attacker, 50_000e18);
+
+        vm.startPrank(attacker);
+        tokenA.approve(address(pool), 50_000e18);
+        pool.swap(address(tokenA), 50_000e18, 0, attacker, block.timestamp + 1 hours);
+        vm.stopPrank();
+
+        vm.startPrank(user);
+        tokenA.approve(address(executor), 100e18);
+
+        vm.expectRevert(bytes("PRICE_DEVIATION_TOO_HIGH"));
+        executor.executeAutoChunkedSwap(
+            pool,
+            address(tokenA),
+            100e18,
+            1,
+            user,
+            block.timestamp + 1 hours
+        );
+
+        vm.stopPrank();
+    }
+
+    function testExecutorBlocksSwapOnOracleTwapSlippage() public {
+        uint256 largeAmount = 20_000e18;
+        tokenA.mint(user, largeAmount);
+
+        vm.startPrank(user);
+        tokenA.approve(address(executor), largeAmount);
+
+        vm.expectRevert(bytes("TWAP_SLIPPAGE_TOO_HIGH"));
+        executor.executeAutoChunkedSwapWithOracleParams(
+            pool,
+            address(tokenA),
+            largeAmount,
+            1,
+            user,
+            block.timestamp + 1 hours,
+            300,
+            10_000,
+            50,
+            1 hours
+        );
+
+        vm.stopPrank();
+    }
+
+    function testExecutorRevertsOnStaleChainlinkData() public {
+        vm.warp(block.timestamp + 2 hours);
+
+        vm.startPrank(user);
+        tokenA.approve(address(executor), 100e18);
+
+        vm.expectRevert(bytes("ORACLE_STALE"));
+        executor.executeAutoChunkedSwap(
+            pool,
+            address(tokenA),
+            100e18,
+            1,
+            user,
+            block.timestamp + 1 hours
+        );
+
+        vm.stopPrank();
+
+        uint256 expectedFee = (totalOut * executor.EXECUTOR_FEE_BPS()) / 10_000;
+        assertEq(tokenB.balanceOf(feeCollector), expectedFee, "fee recipient must receive fee");
+    }
+
+    function testExecutorSpendsEntireInputWithRemainder() public {
+        uint256 amountIn = 33_333e18;
+
+        tokenA.mint(user, amountIn);
+
+        vm.startPrank(user);
+        tokenA.approve(address(executor), amountIn);
+
+        executor.executeAutoChunkedSwap(
+            pool,
+            address(tokenA),
+            amountIn,
+            1,
+            user,
+            block.timestamp + 1 hours
+        );
+
+        vm.stopPrank();
+
+        assertEq(
+            tokenA.balanceOf(address(executor)),
+            0,
+            "executor should not keep input token remainder"
+        );
+    }
+
+    function testExecutorRevertsOnExpiredDeadline() public {
+        vm.startPrank(user);
+        tokenA.approve(address(executor), 1e18);
+
+        vm.expectRevert(bytes("EXPIRED"));
+        executor.executeAutoChunkedSwap(pool, address(tokenA), 1e18, 0, user, block.timestamp - 1);
+
+        vm.stopPrank();
+    }
 }
