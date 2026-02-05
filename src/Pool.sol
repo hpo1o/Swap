@@ -12,6 +12,12 @@ import {SwapMath} from "./libraries/SwapMath.sol";
 contract Pool is ERC20, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    struct Observation {
+        uint32 timestamp;
+        uint256 price0Cumulative;
+        uint256 price1Cumulative;
+    }
+
     IERC20 public immutable token0;
     IERC20 public immutable token1;
 
@@ -21,6 +27,8 @@ contract Pool is ERC20, ReentrancyGuard {
     uint256 public price0CumulativeLast;
     uint256 public price1CumulativeLast;
     uint32 public blockTimestampLast;
+
+    Observation[] public observations;
 
     uint256 public constant FEE_BPS = 30; // 0.3%
     uint256 public constant BPS_DENOM = 10_000;
@@ -37,11 +45,43 @@ contract Pool is ERC20, ReentrancyGuard {
         require(_token0 != _token1, "IDENTICAL_ADDRESSES");
         token0 = IERC20(_token0);
         token1 = IERC20(_token1);
+
+        uint32 ts = uint32(block.timestamp);
+        blockTimestampLast = ts;
+        observations.push(
+            Observation({
+                timestamp: ts,
+                price0Cumulative: 0,
+                price1Cumulative: 0
+            })
+        );
     }
 
     /// @notice Возвращает текущие резервы
     function getReserves() external view returns (uint256, uint256) {
         return (reserve0, reserve1);
+    }
+
+    function observationsLength() external view returns (uint256) {
+        return observations.length;
+    }
+
+    function _recordObservation(uint32 blockTimestamp) internal {
+        uint256 lastIndex = observations.length - 1;
+
+        if (observations[lastIndex].timestamp == blockTimestamp) {
+            observations[lastIndex].price0Cumulative = price0CumulativeLast;
+            observations[lastIndex].price1Cumulative = price1CumulativeLast;
+            return;
+        }
+
+        observations.push(
+            Observation({
+                timestamp: blockTimestamp,
+                price0Cumulative: price0CumulativeLast,
+                price1Cumulative: price1CumulativeLast
+            })
+        );
     }
 
     function _updateTWAP() internal {
@@ -54,22 +94,78 @@ contract Pool is ERC20, ReentrancyGuard {
         }
 
         blockTimestampLast = blockTimestamp;
+        _recordObservation(blockTimestamp);
+    }
+
+    function _currentCumulatives()
+        internal
+        view
+        returns (
+            uint32 currentTimestamp,
+            uint256 currentPrice0Cumulative,
+            uint256 currentPrice1Cumulative
+        )
+    {
+        currentTimestamp = uint32(block.timestamp);
+        currentPrice0Cumulative = price0CumulativeLast;
+        currentPrice1Cumulative = price1CumulativeLast;
+
+        if (currentTimestamp > blockTimestampLast && reserve0 > 0 && reserve1 > 0) {
+            uint32 timeElapsed = currentTimestamp - blockTimestampLast;
+            currentPrice0Cumulative += ((reserve1 * 1e18) / reserve0) * timeElapsed;
+            currentPrice1Cumulative += ((reserve0 * 1e18) / reserve1) * timeElapsed;
+        }
+    }
+
+    /// @notice TWAP-цена для tokenIn -> tokenOut в 1e18 формате
+    /// @dev Если недостаточно глубокой истории, используется максимально доступный интервал.
+    function consult(address tokenIn, uint32 interval) external view returns (uint256 priceX18) {
+        require(interval > 0, "INVALID_INTERVAL");
+        require(tokenIn == address(token0) || tokenIn == address(token1), "INVALID_TOKEN_IN");
+
+        (
+            uint32 currentTimestamp,
+            uint256 currentPrice0Cumulative,
+            uint256 currentPrice1Cumulative
+        ) = _currentCumulatives();
+
+        Observation memory oldest = observations[0];
+        Observation memory targetObs = oldest;
+
+        if (currentTimestamp > interval) {
+            uint32 targetTimestamp = currentTimestamp - interval;
+            uint256 len = observations.length;
+
+            for (uint256 i = len; i > 0; i--) {
+                Observation memory obs = observations[i - 1];
+                if (obs.timestamp <= targetTimestamp) {
+                    targetObs = obs;
+                    break;
+                }
+            }
+        }
+
+        uint32 elapsed = currentTimestamp - targetObs.timestamp;
+        require(elapsed > 0, "NO_TIME_ELAPSED");
+
+        uint256 avgPrice0X18 = (currentPrice0Cumulative - targetObs.price0Cumulative) / elapsed;
+        uint256 avgPrice1X18 = (currentPrice1Cumulative - targetObs.price1Cumulative) / elapsed;
+
+        priceX18 = tokenIn == address(token0) ? avgPrice0X18 : avgPrice1X18;
+    }
+
+    /// @notice Spot цена tokenIn -> tokenOut в 1e18 формате
+    function getSpotPrice(address tokenIn) external view returns (uint256 priceX18) {
+        require(tokenIn == address(token0) || tokenIn == address(token1), "INVALID_TOKEN_IN");
+        require(reserve0 > 0 && reserve1 > 0, "NO_LIQUIDITY");
+
+        priceX18 = tokenIn == address(token0)
+            ? (reserve1 * 1e18) / reserve0
+            : (reserve0 * 1e18) / reserve1;
     }
 
     function getTWAP() external view returns (uint256 price0TWAP) {
-        require(blockTimestampLast != 0, "NO_TWAP_DATA");
-
-        uint32 timeElapsed = uint32(block.timestamp) - blockTimestampLast;
-        require(timeElapsed > 0, "NO_TIME_ELAPSED");
-
-        uint256 cumulative = price0CumulativeLast;
-
-        if (reserve0 > 0 && reserve1 > 0) {
-            uint256 currentPrice = (reserve1 * 1e18) / reserve0;
-            cumulative += currentPrice * timeElapsed;
-        }
-
-        price0TWAP = cumulative / timeElapsed;
+        price0TWAP = this.consult(address(token0), 1);
     }
 
     /// @notice Выполняет свап tokenIn -> tokenOut
