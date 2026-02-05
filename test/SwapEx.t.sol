@@ -158,7 +158,11 @@ contract SwapExecutorTest is Test {
 
         vm.stopPrank();
 
-        assertEq(tokenA.balanceOf(address(executor)), 0, "executor should not keep input token remainder");
+        assertEq(
+            tokenA.balanceOf(address(executor)),
+            0,
+            "executor should not keep input token remainder"
+        );
     }
 
     function testExecutorRevertsOnExpiredDeadline() public {

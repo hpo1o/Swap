@@ -25,7 +25,13 @@ contract Pool is ERC20, ReentrancyGuard {
     uint256 public constant FEE_BPS = 30; // 0.3%
     uint256 public constant BPS_DENOM = 10_000;
 
-    event Swap(address indexed sender, address tokenIn, uint256 amountIn, uint256 amountOut, address indexed to);
+    event Swap(
+        address indexed sender,
+        address tokenIn,
+        uint256 amountIn,
+        uint256 amountOut,
+        address indexed to
+    );
 
     constructor(address _token0, address _token1) ERC20("LP TOKEN", "LP") {
         require(_token0 != _token1, "IDENTICAL_ADDRESSES");
@@ -73,7 +79,13 @@ contract Pool is ERC20, ReentrancyGuard {
     /// @param to адрес, на который отправить output токен
     /// @param deadline timestamp, после которого swap должен ревертиться
     /// @return amountOut количество полученного токена
-    function swap(address tokenIn, uint256 amountIn, uint256 minAmountOut, address to, uint256 deadline)
+    function swap(
+        address tokenIn,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        address to,
+        uint256 deadline
+    )
         external
         nonReentrant
         returns (uint256 amountOut)
@@ -85,7 +97,8 @@ contract Pool is ERC20, ReentrancyGuard {
         _updateTWAP();
 
         bool zeroForOne = tokenIn == address(token0);
-        (uint256 reserveIn, uint256 reserveOut) = zeroForOne ? (reserve0, reserve1) : (reserve1, reserve0);
+        (uint256 reserveIn, uint256 reserveOut) =
+            zeroForOne ? (reserve0, reserve1) : (reserve1, reserve0);
 
         IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
 
@@ -124,7 +137,14 @@ contract Pool is ERC20, ReentrancyGuard {
         amountOut = (amountInWithFee * reserveOut) / (reserveIn + amountInWithFee);
     }
 
-    function addLiquidity(uint256 amount0, uint256 amount1) external nonReentrant returns (uint256 liquidity) {
+    function addLiquidity(
+        uint256 amount0,
+        uint256 amount1
+    )
+        external
+        nonReentrant
+        returns (uint256 liquidity)
+    {
         _updateTWAP();
         token0.safeTransferFrom(msg.sender, address(this), amount0);
         token1.safeTransferFrom(msg.sender, address(this), amount1);
@@ -132,7 +152,10 @@ contract Pool is ERC20, ReentrancyGuard {
         if (totalSupply() == 0) {
             liquidity = SwapMath.sqrt(amount0 * amount1);
         } else {
-            liquidity = SwapMath.min((amount0 * totalSupply()) / reserve0, (amount1 * totalSupply()) / reserve1);
+            liquidity = SwapMath.min(
+                (amount0 * totalSupply()) / reserve0,
+                (amount1 * totalSupply()) / reserve1
+            );
         }
 
         require(liquidity > 0, "INSUFFICIENT_LIQUIDITY_MINTED");
@@ -143,7 +166,11 @@ contract Pool is ERC20, ReentrancyGuard {
         reserve1 += amount1;
     }
 
-    function removeLiquidity(uint256 liquidity) external nonReentrant returns (uint256 amount0, uint256 amount1) {
+    function removeLiquidity(uint256 liquidity)
+        external
+        nonReentrant
+        returns (uint256 amount0, uint256 amount1)
+    {
         _updateTWAP();
         require(liquidity > 0, "ZERO_LIQUIDITY");
 
