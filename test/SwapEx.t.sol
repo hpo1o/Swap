@@ -5,9 +5,13 @@ import "forge-std/Test.sol";
 import "../src/Pool.sol";
 import "../src/SwapExecutor.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+<<<<<<< codex/evaluate-project-for-issues-and-improvements-5ae09r
 import {
     AggregatorV3Interface
 } from "../src/interfaces/AggregatorV3Interface.sol";
+=======
+import "../src/interfaces/AggregatorV3Interface.sol";
+>>>>>>> master
 
 contract MockToken is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {}
@@ -189,12 +193,19 @@ contract SwapExecutorTest is Test {
     }
 
     function testExecutorSendsFeeToFeeCollector() public {
+<<<<<<< codex/evaluate-project-for-issues-and-improvements-5ae09r
         uint256 totalOut;
 
         vm.startPrank(user);
         tokenA.approve(address(executor), 500e18);
 
         totalOut = executor.executeAutoChunkedSwap(
+=======
+        vm.startPrank(user);
+        tokenA.approve(address(executor), 500e18);
+
+        uint256 totalOut = executor.executeAutoChunkedSwap(
+>>>>>>> master
             pool,
             address(tokenA),
             500e18,
@@ -224,6 +235,92 @@ contract SwapExecutorTest is Test {
             1,
             user,
             block.timestamp + 1 hours
+<<<<<<< codex/evaluate-project-for-issues-and-improvements-5ae09r
+        );
+
+        vm.stopPrank();
+
+        assertEq(
+            tokenA.balanceOf(address(executor)),
+            0,
+            "executor should not keep input token remainder"
+        );
+    }
+
+    function testExecutorRevertsOnExpiredDeadline() public {
+        vm.startPrank(user);
+        tokenA.approve(address(executor), 1e18);
+
+        vm.expectRevert(bytes("EXPIRED"));
+        executor.executeAutoChunkedSwap(pool, address(tokenA), 1e18, 0, user, block.timestamp - 1);
+
+        vm.stopPrank();
+    }
+
+    function testExecutorBlocksSwapOnSpotDeviationAgainstChainlinkTwap() public {
+        tokenA.mint(attacker, 50_000e18);
+
+        vm.startPrank(attacker);
+        tokenA.approve(address(pool), 50_000e18);
+        pool.swap(address(tokenA), 50_000e18, 0, attacker, block.timestamp + 1 hours);
+        vm.stopPrank();
+
+        vm.startPrank(user);
+        tokenA.approve(address(executor), 100e18);
+
+        vm.expectRevert(bytes("PRICE_DEVIATION_TOO_HIGH"));
+        executor.executeAutoChunkedSwap(
+            pool,
+            address(tokenA),
+            100e18,
+            1,
+            user,
+            block.timestamp + 1 hours
+        );
+
+        vm.stopPrank();
+    }
+
+    function testExecutorBlocksSwapOnOracleTwapSlippage() public {
+        uint256 largeAmount = 20_000e18;
+        tokenA.mint(user, largeAmount);
+
+        vm.startPrank(user);
+        tokenA.approve(address(executor), largeAmount);
+
+        vm.expectRevert(bytes("TWAP_SLIPPAGE_TOO_HIGH"));
+        executor.executeAutoChunkedSwapWithOracleParams(
+            pool,
+            address(tokenA),
+            largeAmount,
+            1,
+            user,
+            block.timestamp + 1 hours,
+            300,
+            10_000,
+            50,
+            1 hours
+        );
+
+        vm.stopPrank();
+    }
+
+    function testExecutorRevertsOnStaleChainlinkData() public {
+        vm.warp(block.timestamp + 2 hours);
+
+        vm.startPrank(user);
+        tokenA.approve(address(executor), 100e18);
+
+        vm.expectRevert(bytes("ORACLE_STALE"));
+        executor.executeAutoChunkedSwap(
+            pool,
+            address(tokenA),
+            100e18,
+            1,
+            user,
+            block.timestamp + 1 hours
+=======
+>>>>>>> master
         );
 
         vm.stopPrank();
@@ -308,7 +405,5 @@ contract SwapExecutorTest is Test {
             user,
             block.timestamp + 1 hours
         );
-
-        vm.stopPrank();
     }
 }
