@@ -78,110 +78,6 @@ contract SwapExecutor is ReentrancyGuard {
         );
     }
 
-    function _validateBaseParams(
-        uint256 totalAmountIn,
-        uint256 deadline,
-        uint32 oracleTwapInterval
-    ) internal view {
-        require(block.timestamp <= deadline, "EXPIRED");
-        require(totalAmountIn > 0, "ZERO_AMOUNT");
-        require(oracleTwapInterval > 0, "INVALID_INTERVAL");
-    }
-
-    function _validatePriceWithOracle(
-        Pool pool,
-        address token0,
-        uint32 oracleTwapInterval,
-        uint256 maxPriceDeviationBps,
-        uint256 maxOracleDelay
-    ) internal view returns (uint256 oracleTwapPriceX18) {
-        oracleTwapPriceX18 = _chainlinkTwapX18(oracleTwapInterval, maxOracleDelay);
-        uint256 spotPriceX18 = pool.getSpotPrice(token0);
-
-        uint256 deviationBps =
-            _absDiff(spotPriceX18, oracleTwapPriceX18) * BPS_DENOM / oracleTwapPriceX18;
-
-        require(deviationBps <= maxPriceDeviationBps, "PRICE_DEVIATION_TOO_HIGH");
-    }
-
-    function _calculateChunks(
-        Pool pool,
-        address tokenIn,
-        address token0,
-        uint256 totalAmountIn
-    ) internal view returns (uint256 chunks, uint256 amountPerChunk) {
-        (uint256 reserve0, uint256 reserve1) = pool.getReserves();
-        uint256 reserveIn = tokenIn == token0 ? reserve0 : reserve1;
-
-        uint256 maxChunkSize = reserveIn / 10;
-        if (maxChunkSize == 0) maxChunkSize = totalAmountIn;
-
-        chunks = totalAmountIn / maxChunkSize;
-        if (totalAmountIn % maxChunkSize != 0) chunks++;
-
-        amountPerChunk = totalAmountIn / chunks;
-    }
-
-    function _performChunkedSwap(
-        Pool pool,
-        address tokenIn,
-        uint256 totalAmountIn,
-        uint256 chunks,
-        uint256 amountPerChunk,
-        uint256 deadline
-    ) internal returns (uint256 totalOut) {
-        IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), totalAmountIn);
-        IERC20(tokenIn).safeIncreaseAllowance(address(pool), totalAmountIn);
-
-        uint256 spent;
-        for (uint256 i = 0; i < chunks; i++) {
-            uint256 amountThisChunk =
-                i == chunks - 1 ? totalAmountIn - spent : amountPerChunk;
-
-            spent += amountThisChunk;
-            totalOut += pool.swap(tokenIn, amountThisChunk, 0, address(this), deadline);
-        }
-    }
-
-    function _validateSlippage(
-        address tokenIn,
-        address token0,
-        uint256 totalAmountIn,
-        uint256 totalOut,
-        uint256 oracleTwapPriceX18,
-        uint256 minTotalOut,
-        uint256 maxTwapSlippageBps
-    ) internal pure {
-        require(totalOut >= minTotalOut, "TOTAL_SLIPPAGE");
-
-        uint256 twapExpectedOut = tokenIn == token0
-            ? (totalAmountIn * oracleTwapPriceX18) / 1e18
-            : (totalAmountIn * 1e18) / oracleTwapPriceX18;
-
-        uint256 minByTwap =
-            (twapExpectedOut * (BPS_DENOM - maxTwapSlippageBps)) / BPS_DENOM;
-
-        require(totalOut >= minByTwap, "TWAP_SLIPPAGE_TOO_HIGH");
-    }
-
-    function _takeFeeAndTransfer(
-        Pool pool,
-        address tokenIn,
-        uint256 totalOut,
-        address to
-    ) internal {
-        uint256 fee = (totalOut * EXECUTOR_FEE_BPS) / BPS_DENOM;
-        IERC20 tokenOut = pool.tokenOut(tokenIn);
-
-        if (fee > 0) {
-            tokenOut.safeTransfer(feeRecipient, fee);
-        }
-        tokenOut.safeTransfer(to, totalOut - fee);
-    }
-
-
-
-
     function _executeAutoChunkedSwapWithOracleTwap(
         Pool pool,
         address tokenIn,
@@ -194,47 +90,114 @@ contract SwapExecutor is ReentrancyGuard {
         uint256 maxTwapSlippageBps,
         uint256 maxOracleDelay
     ) internal returns (uint256 totalOut) {
-        _validateBaseParams(totalAmountIn, deadline, oracleTwapInterval);
+        require(block.timestamp <= deadline, "EXPIRED");
+        require(totalAmountIn > 0, "ZERO_AMOUNT");
+        require(oracleTwapInterval > 0, "INVALID_INTERVAL");
 
-        address token0 = address(pool.token0());
-        address token1 = address(pool.token1());
-        require(tokenIn == token0 || tokenIn == token1, "INVALID_TOKEN_IN");
-
-        uint256 oracleTwapPriceX18 = _validatePriceWithOracle(
+        (address token0, address token1) = _validateToken(pool, tokenIn);
+        uint256 oracleTwapPriceX18 = _checkOracleDeviation(
             pool,
             token0,
             oracleTwapInterval,
-            maxPriceDeviationBps,
-            maxOracleDelay
+            maxOracleDelay,
+            maxPriceDeviationBps
         );
 
-        (uint256 chunks, uint256 amountPerChunk) =
-            _calculateChunks(pool, tokenIn, token0, totalAmountIn);
+        totalOut = _executeChunks(pool, tokenIn, totalAmountIn, deadline, token0);
 
-        totalOut = _performChunkedSwap(
-            pool,
-            tokenIn,
-            totalAmountIn,
-            chunks,
-            amountPerChunk,
-            deadline
-        );
+        require(totalOut >= minTotalOut, "TOTAL_SLIPPAGE");
 
-        _validateSlippage(
+        _checkTwapSlippage(
             tokenIn,
             token0,
             totalAmountIn,
             totalOut,
             oracleTwapPriceX18,
-            minTotalOut,
             maxTwapSlippageBps
         );
 
-        _takeFeeAndTransfer(pool, tokenIn, totalOut, to);
+        uint256 fee = (totalOut * EXECUTOR_FEE_BPS) / BPS_DENOM;
+        IERC20 tokenOutERC20 = pool.tokenOut(tokenIn);
+
+        if (fee > 0) {
+            tokenOutERC20.safeTransfer(feeRecipient, fee);
+        }
+        tokenOutERC20.safeTransfer(to, totalOut - fee);
+
+        return totalOut;
     }
 
-    
+    function _validateToken(
+        Pool pool,
+        address tokenIn
+    ) internal view returns (address token0, address token1) {
+        token0 = address(pool.token0());
+        token1 = address(pool.token1());
+        require(tokenIn == token0 || tokenIn == token1, "INVALID_TOKEN_IN");
+    }
 
+    function _checkOracleDeviation(
+        Pool pool,
+        address token0,
+        uint32 oracleTwapInterval,
+        uint256 maxOracleDelay,
+        uint256 maxPriceDeviationBps
+    ) internal view returns (uint256 oracleTwapPriceX18) {
+        oracleTwapPriceX18 = _chainlinkTwapX18(oracleTwapInterval, maxOracleDelay);
+        uint256 spotPriceX18 = pool.getSpotPrice(token0);
+
+        uint256 deviationBps =
+            _absDiff(spotPriceX18, oracleTwapPriceX18) * BPS_DENOM / oracleTwapPriceX18;
+        require(deviationBps <= maxPriceDeviationBps, "PRICE_DEVIATION_TOO_HIGH");
+    }
+
+    function _executeChunks(
+        Pool pool,
+        address tokenIn,
+        uint256 totalAmountIn,
+        uint256 deadline,
+        address token0
+    ) internal returns (uint256 totalOut) {
+        (uint256 reserve0, uint256 reserve1) = pool.getReserves();
+        uint256 reserveIn = tokenIn == token0 ? reserve0 : reserve1;
+
+        uint256 maxChunkSize = reserveIn / 10;
+        if (maxChunkSize == 0) maxChunkSize = totalAmountIn;
+
+        uint256 chunks = totalAmountIn / maxChunkSize;
+        if (totalAmountIn % maxChunkSize != 0) chunks += 1;
+
+        uint256 amountPerChunk = totalAmountIn / chunks;
+
+        IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), totalAmountIn);
+        IERC20(tokenIn).safeIncreaseAllowance(address(pool), totalAmountIn);
+
+        uint256 spent;
+        for (uint256 i = 0; i < chunks; i++) {
+            uint256 amountThisChunk = i == chunks - 1 ? totalAmountIn - spent : amountPerChunk;
+            spent += amountThisChunk;
+
+            uint256 out = pool.swap(tokenIn, amountThisChunk, 0, address(this), deadline);
+            totalOut += out;
+        }
+    }
+
+    function _checkTwapSlippage(
+        address tokenIn,
+        address token0,
+        uint256 totalAmountIn,
+        uint256 totalOut,
+        uint256 oracleTwapPriceX18,
+        uint256 maxTwapSlippageBps
+    ) internal pure {
+        uint256 twapExpectedOut = tokenIn == token0
+            ? (totalAmountIn * oracleTwapPriceX18) / 1e18
+            : (totalAmountIn * 1e18) / oracleTwapPriceX18;
+
+        uint256 minAcceptableOutByTwap =
+            (twapExpectedOut * (BPS_DENOM - maxTwapSlippageBps)) / BPS_DENOM;
+        require(totalOut >= minAcceptableOutByTwap, "TWAP_SLIPPAGE_TOO_HIGH");
+    }
 
     function _chainlinkTwapX18(uint32 interval, uint256 maxOracleDelay)
         internal
