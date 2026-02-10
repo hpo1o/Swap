@@ -41,6 +41,20 @@ contract Pool is ERC20, ReentrancyGuard {
         address indexed to
     );
 
+    event AddLiquidity(
+        address indexed sender,
+        uint256 amount0,
+        uint256 amount1,
+        uint256 liquidity
+    );
+
+    event RemoveLiquidity(
+        address indexed sender,
+        uint256 amount0,
+        uint256 amount1,
+        uint256 liquidity
+    );
+
     constructor(address _token0, address _token1) ERC20("LP TOKEN", "LP") {
         require(_token0 != _token1, "IDENTICAL_ADDRESSES");
         token0 = IERC20(_token0);
@@ -235,47 +249,63 @@ contract Pool is ERC20, ReentrancyGuard {
 
     function addLiquidity(
         uint256 amount0,
-        uint256 amount1
+        uint256 amount1,
+        uint256 minLiquidity,
+        uint256 deadline
     )
         external
         nonReentrant
         returns (uint256 liquidity)
     {
+        require(block.timestamp <= deadline, "EXPIRED");
+        require(amount0 > 0 && amount1 > 0, "ZERO_AMOUNT");
+
         _updateTWAP();
         token0.safeTransferFrom(msg.sender, address(this), amount0);
         token1.safeTransferFrom(msg.sender, address(this), amount1);
 
-        if (totalSupply() == 0) {
+        uint256 supply = totalSupply();
+
+        if (supply == 0) {
             liquidity = SwapMath.sqrt(amount0 * amount1);
         } else {
-            liquidity = SwapMath.min(
-                (amount0 * totalSupply()) / reserve0,
-                (amount1 * totalSupply()) / reserve1
-            );
+            liquidity = SwapMath.min((amount0 * supply) / reserve0, (amount1 * supply) / reserve1);
         }
 
         require(liquidity > 0, "INSUFFICIENT_LIQUIDITY_MINTED");
+        require(liquidity >= minLiquidity, "MIN_LIQUIDITY");
 
         _mint(msg.sender, liquidity);
 
         reserve0 += amount0;
         reserve1 += amount1;
+
+        emit AddLiquidity(msg.sender, amount0, amount1, liquidity);
     }
 
-    function removeLiquidity(uint256 liquidity)
+    function removeLiquidity(
+        uint256 liquidity,
+        uint256 minAmount0,
+        uint256 minAmount1,
+        uint256 deadline
+    )
         external
         nonReentrant
         returns (uint256 amount0, uint256 amount1)
     {
+        require(block.timestamp <= deadline, "EXPIRED");
+
         _updateTWAP();
         require(liquidity > 0, "ZERO_LIQUIDITY");
 
         uint256 supply = totalSupply();
+        require(supply > 0, "NO_SUPPLY");
 
         amount0 = (liquidity * reserve0) / supply;
         amount1 = (liquidity * reserve1) / supply;
 
         require(amount0 > 0 && amount1 > 0, "INSUFFICIENT_OUTPUT");
+        require(amount0 >= minAmount0 && amount1 >= minAmount1, "MIN_OUTPUT");
 
         _burn(msg.sender, liquidity);
 
@@ -284,5 +314,7 @@ contract Pool is ERC20, ReentrancyGuard {
 
         token0.safeTransfer(msg.sender, amount0);
         token1.safeTransfer(msg.sender, amount1);
+
+        emit RemoveLiquidity(msg.sender, amount0, amount1, liquidity);
     }
 }
