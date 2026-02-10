@@ -4,9 +4,7 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {
-    AggregatorV3Interface
-} from "./interfaces/AggregatorV3Interface.sol";
+import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
 import {Pool} from "./Pool.sol";
 
 contract SwapExecutor is ReentrancyGuard {
@@ -94,17 +92,71 @@ contract SwapExecutor is ReentrancyGuard {
         require(totalAmountIn > 0, "ZERO_AMOUNT");
         require(oracleTwapInterval > 0, "INVALID_INTERVAL");
 
-        address token0 = address(pool.token0());
-        address token1 = address(pool.token1());
-        require(tokenIn == token0 || tokenIn == token1, "INVALID_TOKEN_IN");
+        (address token0, ) = _validateToken(pool, tokenIn);
 
-        uint256 oracleTwapPriceX18 = _chainlinkTwapX18(oracleTwapInterval, maxOracleDelay);
+        uint256 oracleTwapPriceX18 = _checkOracleDeviation(
+            pool,
+            token0,
+            oracleTwapInterval,
+            maxOracleDelay,
+            maxPriceDeviationBps
+        );
+
+        totalOut = _executeChunks(pool, tokenIn, totalAmountIn, deadline, token0);
+
+        require(totalOut >= minTotalOut, "TOTAL_SLIPPAGE");
+
+        _checkTwapSlippage(
+            tokenIn,
+            token0,
+            totalAmountIn,
+            totalOut,
+            oracleTwapPriceX18,
+            maxTwapSlippageBps
+        );
+
+        uint256 fee = (totalOut * EXECUTOR_FEE_BPS) / BPS_DENOM;
+        IERC20 tokenOutERC20 = pool.tokenOut(tokenIn);
+
+        if (fee > 0) {
+            tokenOutERC20.safeTransfer(feeRecipient, fee);
+        }
+        tokenOutERC20.safeTransfer(to, totalOut - fee);
+
+        return totalOut;
+    }
+
+    function _validateToken(
+        Pool pool,
+        address tokenIn
+    ) internal view returns (address token0, address token1) {
+        token0 = address(pool.token0());
+        token1 = address(pool.token1());
+        require(tokenIn == token0 || tokenIn == token1, "INVALID_TOKEN_IN");
+    }
+
+    function _checkOracleDeviation(
+        Pool pool,
+        address token0,
+        uint32 oracleTwapInterval,
+        uint256 maxOracleDelay,
+        uint256 maxPriceDeviationBps
+    ) internal view returns (uint256 oracleTwapPriceX18) {
+        oracleTwapPriceX18 = _chainlinkTwapX18(oracleTwapInterval, maxOracleDelay);
         uint256 spotPriceX18 = pool.getSpotPrice(token0);
 
         uint256 deviationBps =
             _absDiff(spotPriceX18, oracleTwapPriceX18) * BPS_DENOM / oracleTwapPriceX18;
         require(deviationBps <= maxPriceDeviationBps, "PRICE_DEVIATION_TOO_HIGH");
+    }
 
+    function _executeChunks(
+        Pool pool,
+        address tokenIn,
+        uint256 totalAmountIn,
+        uint256 deadline,
+        address token0
+    ) internal returns (uint256 totalOut) {
         (uint256 reserve0, uint256 reserve1) = pool.getReserves();
         uint256 reserveIn = tokenIn == token0 ? reserve0 : reserve1;
 
@@ -127,9 +179,16 @@ contract SwapExecutor is ReentrancyGuard {
             uint256 out = pool.swap(tokenIn, amountThisChunk, 0, address(this), deadline);
             totalOut += out;
         }
+    }
 
-        require(totalOut >= minTotalOut, "TOTAL_SLIPPAGE");
-
+    function _checkTwapSlippage(
+        address tokenIn,
+        address token0,
+        uint256 totalAmountIn,
+        uint256 totalOut,
+        uint256 oracleTwapPriceX18,
+        uint256 maxTwapSlippageBps
+    ) internal pure {
         uint256 twapExpectedOut = tokenIn == token0
             ? (totalAmountIn * oracleTwapPriceX18) / 1e18
             : (totalAmountIn * 1e18) / oracleTwapPriceX18;
@@ -137,16 +196,6 @@ contract SwapExecutor is ReentrancyGuard {
         uint256 minAcceptableOutByTwap =
             (twapExpectedOut * (BPS_DENOM - maxTwapSlippageBps)) / BPS_DENOM;
         require(totalOut >= minAcceptableOutByTwap, "TWAP_SLIPPAGE_TOO_HIGH");
-
-        uint256 fee = (totalOut * EXECUTOR_FEE_BPS) / BPS_DENOM;
-        IERC20 tokenOutERC20 = pool.tokenOut(tokenIn);
-
-        if (fee > 0) {
-            tokenOutERC20.safeTransfer(feeRecipient, fee);
-        }
-        tokenOutERC20.safeTransfer(to, totalOut - fee);
-
-        return totalOut;
     }
 
     function _chainlinkTwapX18(uint32 interval, uint256 maxOracleDelay)
