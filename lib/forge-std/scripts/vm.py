@@ -145,7 +145,7 @@ def prefix_with_group_headers(cheats: list["Cheatcode"]):
 
         c = copy.deepcopy(cheat)
         c.func.description = ""
-        c.func.declaration = f"// ======== {group(c.group)} ========"
+        c.func.declaration = f"// -------- {group(c.group)} --------"
         cheats.insert(i, c)
     return cheats
 
