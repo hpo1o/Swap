@@ -263,4 +263,69 @@ contract SwapExecutor is ReentrancyGuard {
     function _absDiff(uint256 a, uint256 b) internal pure returns (uint256) {
         return a >= b ? a - b : b - a;
     }
+
+    function _chainlinkTwapX18(uint32 interval, uint256 maxOracleDelay)
+        internal
+        view
+        returns (uint256 twapX18)
+    {
+        (
+            uint80 latestRoundId,
+            int256 latestAnswer,
+            uint256 startedAt,
+            uint256 latestUpdatedAt,
+            uint80 answeredInRound
+        ) = chainlinkFeed.latestRoundData();
+
+        require(startedAt != 0, "ORACLE_NO_DATA");
+        require(answeredInRound >= latestRoundId, "ORACLE_INCOMPLETE_ROUND");
+
+        require(latestAnswer > 0, "ORACLE_BAD_PRICE");
+        require(latestUpdatedAt != 0, "ORACLE_NO_DATA");
+        require(block.timestamp - latestUpdatedAt <= maxOracleDelay, "ORACLE_STALE");
+
+        uint8 decimals = chainlinkFeed.decimals();
+
+        uint256 weightedSum;
+        uint256 totalWeight;
+
+        uint80 roundId = latestRoundId;
+        uint256 cursor = block.timestamp;
+        uint256 targetStart = block.timestamp - interval;
+
+        for (uint256 i = 0; i < 24; i++) {
+            (uint80 id, int256 answer, , uint256 updatedAt, ) = chainlinkFeed.getRoundData(roundId);
+            if (updatedAt == 0 || answer <= 0) break;
+
+            uint256 roundEnd = cursor;
+            uint256 roundStart = updatedAt;
+
+            if (roundEnd <= targetStart) break;
+            if (roundStart < targetStart) roundStart = targetStart;
+
+            uint256 weight = roundEnd - roundStart;
+            if (weight > 0) {
+                uint256 priceX18 = _toX18(uint256(answer), decimals);
+                weightedSum += priceX18 * weight;
+                totalWeight += weight;
+            }
+
+            if (id == 0) break;
+            cursor = updatedAt;
+            roundId = id - 1;
+        }
+
+        require(totalWeight > 0, "ORACLE_TWAP_NO_WINDOW");
+        twapX18 = weightedSum / totalWeight;
+    }
+
+    function _toX18(uint256 value, uint8 decimals) internal pure returns (uint256) {
+        if (decimals == 18) return value;
+        if (decimals < 18) return value * (10 ** (18 - decimals));
+        return value / (10 ** (decimals - 18));
+    }
+
+    function _absDiff(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a >= b ? a - b : b - a;
+    }
 }
