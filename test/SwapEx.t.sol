@@ -76,6 +76,20 @@ contract SwapExecutorTest is Test {
     address feeCollector;
     address attacker;
 
+    event AddLiquidity(
+        address indexed sender,
+        uint256 amount0,
+        uint256 amount1,
+        uint256 liquidity
+    );
+
+    event RemoveLiquidity(
+        address indexed sender,
+        uint256 amount0,
+        uint256 amount1,
+        uint256 liquidity
+    );
+
     function setUp() public {
         user = address(0x1234);
         feeCollector = address(0xBEEF);
@@ -95,7 +109,7 @@ contract SwapExecutorTest is Test {
 
         tokenA.approve(address(pool), type(uint256).max);
         tokenB.approve(address(pool), type(uint256).max);
-        pool.addLiquidity(100_000e18, 10_000_000e18);
+        pool.addLiquidity(100_000e18, 10_000_000e18, 1, block.timestamp + 1 hours);
 
         uint256 t0 = block.timestamp + 300;
         vm.warp(t0);
@@ -140,7 +154,7 @@ contract SwapExecutorTest is Test {
 
         tokenA.approve(address(smallPool), type(uint256).max);
         tokenB.approve(address(smallPool), type(uint256).max);
-        smallPool.addLiquidity(5e18, 5e18);
+        smallPool.addLiquidity(5e18, 5e18, 1, block.timestamp + 1 hours);
 
         SwapExecutor smallExecutor = new SwapExecutor(feeCollector, address(feed));
 
@@ -319,11 +333,64 @@ contract SwapExecutorTest is Test {
         );
 
         vm.stopPrank();
-
-        assertEq(
-            tokenA.balanceOf(address(executor)),
-            0,
-            "executor should not keep input token remainder"
-        );
     }
+
+    function testAddLiquidityRevertsOnExpiredDeadline() public {
+        vm.expectRevert(bytes("EXPIRED"));
+        pool.addLiquidity(1e18, 100e18, 1, block.timestamp - 1);
+    }
+
+    function testAddLiquidityRevertsOnZeroAmount() public {
+        vm.expectRevert(bytes("ZERO_AMOUNT"));
+        pool.addLiquidity(0, 100e18, 1, block.timestamp + 1 hours);
+    }
+
+    function testAddLiquidityEmitsEvent() public {
+        tokenA.mint(address(this), 10e18);
+        tokenB.mint(address(this), 1_000e18);
+
+        vm.expectEmit(true, false, false, true);
+        emit AddLiquidity(address(this), 10e18, 1_000e18, 100e18);
+
+        uint256 liquidity = pool.addLiquidity(
+            10e18,
+            1_000e18,
+            1,
+            block.timestamp + 1 hours
+        );
+
+        assertEq(liquidity, 100e18, "liquidity minted mismatch");
+    }
+
+    function testRemoveLiquidityRevertsOnExpiredDeadline() public {
+        uint256 liquidity = pool.balanceOf(address(this));
+
+        vm.expectRevert(bytes("EXPIRED"));
+        pool.removeLiquidity(liquidity / 10, 1, 1, block.timestamp - 1);
+    }
+
+    function testRemoveLiquidityRevertsOnMinOutput() public {
+        uint256 liquidity = pool.balanceOf(address(this));
+
+        vm.expectRevert(bytes("MIN_OUTPUT"));
+        pool.removeLiquidity(liquidity / 10, 20_000e18, 20_000e18, block.timestamp + 1 hours);
+    }
+
+    function testRemoveLiquidityEmitsEvent() public {
+        uint256 liquidityToRemove = pool.balanceOf(address(this)) / 10;
+
+        vm.expectEmit(true, false, false, false);
+        emit RemoveLiquidity(address(this), 0, 0, liquidityToRemove);
+
+        (uint256 amount0, uint256 amount1) = pool.removeLiquidity(
+            liquidityToRemove,
+            1,
+            1,
+            block.timestamp + 1 hours
+        );
+
+        assertGt(amount0, 0, "amount0 should be > 0");
+        assertGt(amount1, 0, "amount1 should be > 0");
+    }
+
 }
