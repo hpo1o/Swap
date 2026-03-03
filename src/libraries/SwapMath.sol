@@ -29,7 +29,7 @@ library SwapMath {
             z = y;
             uint x = y / 2 + 1;
             while (x < z) {
-                z = x;
+                z = x;        
                 x = (y / x + x) / 2;
             }
         } else if (y != 0) {

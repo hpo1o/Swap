@@ -7,35 +7,41 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {SwapMath} from "./libraries/SwapMath.sol";
 
-/// @title Pool — базовый AMM-пул для двух токенов
-/// @notice Безопасный пул для тестов и портфолио, с фиксированной комиссией
+
 contract Pool is ERC20, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     struct Observation {
-        uint32 timestamp;
+        uint32  timestamp;
         uint256 price0Cumulative;
         uint256 price1Cumulative;
     }
 
-    IERC20 public immutable token0;
-    IERC20 public immutable token1;
+    uint256 public  constant FEE_BPS            = 30;
+    uint256 public  constant BPS_DENOM          = 10_000;
+    uint256 private constant MINIMUM_LIQUIDITY  = 1_000;
+    address private constant DEAD_ADDRESS       = address(0xdead);
+    uint16  public  constant OBS_CARDINALITY    = 720;
+
+    // solhint-disable var-name-mixedcase
+    IERC20 public immutable TOKEN0;
+    IERC20 public immutable TOKEN1;
 
     uint256 private reserve0;
     uint256 private reserve1;
 
     uint256 public price0CumulativeLast;
     uint256 public price1CumulativeLast;
-    uint32 public blockTimestampLast;
+    uint32  public blockTimestampLast;
 
-    Observation[] public observations;
+    Observation[720] public observations;
+    uint16 public observationIndex;
+    uint16 public observationCount;
 
-    uint256 public constant FEE_BPS = 30; // 0.3%
-    uint256 public constant BPS_DENOM = 10_000;
 
     event Swap(
         address indexed sender,
-        address tokenIn,
+        address indexed tokenIn,
         uint256 amountIn,
         uint256 amountOut,
         address indexed to
@@ -56,139 +62,74 @@ contract Pool is ERC20, ReentrancyGuard {
     );
 
     constructor(address _token0, address _token1) ERC20("LP TOKEN", "LP") {
+        require(_token0 != address(0) && _token1 != address(0), "ZERO_ADDRESS");
         require(_token0 != _token1, "IDENTICAL_ADDRESSES");
-        token0 = IERC20(_token0);
-        token1 = IERC20(_token1);
+
+        (TOKEN0, TOKEN1) = _token0 < _token1
+            ? (IERC20(_token0), IERC20(_token1))
+            : (IERC20(_token1), IERC20(_token0));
 
         uint32 ts = uint32(block.timestamp);
         blockTimestampLast = ts;
-        observations.push(
-            Observation({
-                timestamp: ts,
-                price0Cumulative: 0,
-                price1Cumulative: 0
-            })
-        );
+        observations[0] = Observation({
+            timestamp:        ts,
+            price0Cumulative: 0,
+            price1Cumulative: 0
+        });
+        observationCount = 1;
     }
 
-    /// @notice Возвращает текущие резервы
-    function getReserves() external view returns (uint256, uint256) {
+    function getReserves() external view returns (uint256 r0, uint256 r1) {
         return (reserve0, reserve1);
     }
 
-    function observationsLength() external view returns (uint256) {
-        return observations.length;
-    }
-
-    function _recordObservation(uint32 blockTimestamp) internal {
-        uint256 lastIndex = observations.length - 1;
-
-        if (observations[lastIndex].timestamp == blockTimestamp) {
-            observations[lastIndex].price0Cumulative = price0CumulativeLast;
-            observations[lastIndex].price1Cumulative = price1CumulativeLast;
-            return;
-        }
-
-        observations.push(
-            Observation({
-                timestamp: blockTimestamp,
-                price0Cumulative: price0CumulativeLast,
-                price1Cumulative: price1CumulativeLast
-            })
-        );
-    }
-
-    function _updateTWAP() internal {
-        uint32 blockTimestamp = uint32(block.timestamp);
-        uint32 timeElapsed = blockTimestamp - blockTimestampLast;
-
-        if (timeElapsed > 0 && reserve0 > 0 && reserve1 > 0) {
-            price0CumulativeLast += ((reserve1 * 1e18) / reserve0) * timeElapsed;
-            price1CumulativeLast += ((reserve0 * 1e18) / reserve1) * timeElapsed;
-        }
-
-        blockTimestampLast = blockTimestamp;
-        _recordObservation(blockTimestamp);
-    }
-
-    function _currentCumulatives()
-        internal
-        view
-        returns (
-            uint32 currentTimestamp,
-            uint256 currentPrice0Cumulative,
-            uint256 currentPrice1Cumulative
-        )
-    {
-        currentTimestamp = uint32(block.timestamp);
-        currentPrice0Cumulative = price0CumulativeLast;
-        currentPrice1Cumulative = price1CumulativeLast;
-
-        if (currentTimestamp > blockTimestampLast && reserve0 > 0 && reserve1 > 0) {
-            uint32 timeElapsed = currentTimestamp - blockTimestampLast;
-            currentPrice0Cumulative += ((reserve1 * 1e18) / reserve0) * timeElapsed;
-            currentPrice1Cumulative += ((reserve0 * 1e18) / reserve1) * timeElapsed;
-        }
-    }
-
-    /// @notice TWAP-цена для tokenIn -> tokenOut в 1e18 формате
-    /// @dev Если недостаточно глубокой истории, используется максимально доступный интервал.
-    function consult(address tokenIn, uint32 interval) external view returns (uint256 priceX18) {
-        require(interval > 0, "INVALID_INTERVAL");
-        require(tokenIn == address(token0) || tokenIn == address(token1), "INVALID_TOKEN_IN");
-
-        (
-            uint32 currentTimestamp,
-            uint256 currentPrice0Cumulative,
-            uint256 currentPrice1Cumulative
-        ) = _currentCumulatives();
-
-        Observation memory oldest = observations[0];
-        Observation memory targetObs = oldest;
-
-        if (currentTimestamp > interval) {
-            uint32 targetTimestamp = currentTimestamp - interval;
-            uint256 len = observations.length;
-
-            for (uint256 i = len; i > 0; i--) {
-                Observation memory obs = observations[i - 1];
-                if (obs.timestamp <= targetTimestamp) {
-                    targetObs = obs;
-                    break;
-                }
-            }
-        }
-
-        uint32 elapsed = currentTimestamp - targetObs.timestamp;
-        require(elapsed > 0, "NO_TIME_ELAPSED");
-
-        uint256 avgPrice0X18 = (currentPrice0Cumulative - targetObs.price0Cumulative) / elapsed;
-        uint256 avgPrice1X18 = (currentPrice1Cumulative - targetObs.price1Cumulative) / elapsed;
-
-        priceX18 = tokenIn == address(token0) ? avgPrice0X18 : avgPrice1X18;
-    }
-
-    /// @notice Spot цена tokenIn -> tokenOut в 1e18 формате
     function getSpotPrice(address tokenIn) external view returns (uint256 priceX18) {
-        require(tokenIn == address(token0) || tokenIn == address(token1), "INVALID_TOKEN_IN");
+        require(
+            tokenIn == address(TOKEN0) || tokenIn == address(TOKEN1),
+            "INVALID_TOKEN_IN"
+        );
         require(reserve0 > 0 && reserve1 > 0, "NO_LIQUIDITY");
 
-        priceX18 = tokenIn == address(token0)
+        priceX18 = tokenIn == address(TOKEN0)
             ? (reserve1 * 1e18) / reserve0
             : (reserve0 * 1e18) / reserve1;
     }
 
-    function getTWAP() external view returns (uint256 price0TWAP) {
-        price0TWAP = this.consult(address(token0), 1);
+    function consult(address tokenIn, uint32 interval)
+        external
+        view
+        returns (uint256 priceX18)
+    {
+        require(interval >= 300, "INTERVAL_TOO_SHORT");
+        require(
+            tokenIn == address(TOKEN0) || tokenIn == address(TOKEN1),
+            "INVALID_TOKEN_IN"
+        );
+
+        (uint32 currentTs, uint256 cum0, uint256 cum1) = _currentCumulatives();
+
+        Observation memory targetObs = _findObservation(currentTs, interval);
+
+        uint32 elapsed = currentTs - targetObs.timestamp;
+        require(elapsed > 0, "NO_TIME_ELAPSED");
+
+        priceX18 = tokenIn == address(TOKEN0)
+            ? (cum0 - targetObs.price0Cumulative) / elapsed
+            : (cum1 - targetObs.price1Cumulative) / elapsed;
     }
 
-    /// @notice Выполняет свап tokenIn -> tokenOut
-    /// @param tokenIn токен, который пользователь отдаёт
-    /// @param amountIn количество токена для свапа
-    /// @param minAmountOut минимальное количество токена, которое пользователь хочет получить
-    /// @param to адрес, на который отправить output токен
-    /// @param deadline timestamp, после которого swap должен ревертиться
-    /// @return amountOut количество полученного токена
+    function getTwap() external view returns (uint256) {
+        return this.consult(address(TOKEN0), 1_800);
+    }
+
+    function tokenOut(address tokenIn) public view returns (IERC20) {
+        require(
+            tokenIn == address(TOKEN0) || tokenIn == address(TOKEN1),
+            "INVALID_TOKEN_IN"
+        );
+        return tokenIn == address(TOKEN0) ? TOKEN1 : TOKEN0;
+    }
+
     function swap(
         address tokenIn,
         uint256 amountIn,
@@ -200,23 +141,25 @@ contract Pool is ERC20, ReentrancyGuard {
         nonReentrant
         returns (uint256 amountOut)
     {
-        require(block.timestamp <= deadline, "EXPIRED");
-        require(tokenIn == address(token0) || tokenIn == address(token1), "INVALID_TOKEN_IN");
-        require(amountIn > 0, "ZERO_AMOUNT");
+        require(block.timestamp <= deadline,                              "EXPIRED");
+        require(tokenIn == address(TOKEN0) || tokenIn == address(TOKEN1),"INVALID_TOKEN_IN");
+        require(amountIn > 0,                                             "ZERO_AMOUNT");
+        require(to != address(0),                                         "ZERO_TO_ADDRESS");
+        require(to != address(TOKEN0) && to != address(TOKEN1),           "INVALID_TO");
 
-        _updateTWAP();
+        _updateTwap();
 
-        bool zeroForOne = tokenIn == address(token0);
+        bool zeroForOne = tokenIn == address(TOKEN0);
         (uint256 reserveIn, uint256 reserveOut) =
             zeroForOne ? (reserve0, reserve1) : (reserve1, reserve0);
 
         IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
 
-        uint256 amountInWithFee = (amountIn * (BPS_DENOM - FEE_BPS)) / BPS_DENOM;
-        amountOut = getAmountOut(amountInWithFee, reserveIn, reserveOut);
+        amountOut = SwapMath.getAmountOut(amountIn, reserveIn, reserveOut, FEE_BPS);
 
         require(amountOut >= minAmountOut, "SLIPPAGE_TOO_HIGH");
-        require(amountOut <= reserveOut, "INSUFFICIENT_LIQUIDITY");
+        require(amountOut > 0,            "ZERO_OUTPUT");
+        require(amountOut < reserveOut,   "INSUFFICIENT_LIQUIDITY");
 
         if (zeroForOne) {
             reserve0 += amountIn;
@@ -231,25 +174,11 @@ contract Pool is ERC20, ReentrancyGuard {
         emit Swap(msg.sender, tokenIn, amountIn, amountOut, to);
     }
 
-    /// @notice Возвращает токен, который будет выдан
-    function tokenOut(address tokenIn) public view returns (IERC20) {
-        require(tokenIn == address(token0) || tokenIn == address(token1), "INVALID_TOKEN_IN");
-        return tokenIn == address(token0) ? token1 : token0;
-    }
-
-    /// @dev Базовая формула AMM x*y=k
-    function getAmountOut(uint256 amountInWithFee, uint256 reserveIn, uint256 reserveOut)
-        internal
-        pure
-        returns (uint256 amountOut)
-    {
-        require(reserveIn > 0 && reserveOut > 0, "NO_LIQUIDITY");
-        amountOut = (amountInWithFee * reserveOut) / (reserveIn + amountInWithFee);
-    }
-
     function addLiquidity(
-        uint256 amount0,
-        uint256 amount1,
+        uint256 amount0Desired,
+        uint256 amount1Desired,
+        uint256 amount0Min,
+        uint256 amount1Min,
         uint256 minLiquidity,
         uint256 deadline
     )
@@ -257,22 +186,33 @@ contract Pool is ERC20, ReentrancyGuard {
         nonReentrant
         returns (uint256 liquidity)
     {
-        require(block.timestamp <= deadline, "EXPIRED");
-        require(amount0 > 0 && amount1 > 0, "ZERO_AMOUNT");
+        require(block.timestamp <= deadline,                "EXPIRED");
+        require(amount0Desired > 0 && amount1Desired > 0,  "ZERO_AMOUNT");
 
-        _updateTWAP();
-        token0.safeTransferFrom(msg.sender, address(this), amount0);
-        token1.safeTransferFrom(msg.sender, address(this), amount1);
+        _updateTwap();
+
+        (uint256 amount0, uint256 amount1) = _calcOptimalAmounts(
+            amount0Desired, amount1Desired, amount0Min, amount1Min
+        );
+
+        TOKEN0.safeTransferFrom(msg.sender, address(this), amount0);
+        TOKEN1.safeTransferFrom(msg.sender, address(this), amount1);
 
         uint256 supply = totalSupply();
 
         if (supply == 0) {
-            liquidity = SwapMath.sqrt(amount0 * amount1);
+            uint256 initialLiquidity = SwapMath.sqrt(amount0 * amount1);
+            require(initialLiquidity > MINIMUM_LIQUIDITY, "INITIAL_LIQUIDITY_TOO_LOW");
+            liquidity = initialLiquidity - MINIMUM_LIQUIDITY;
+            _mint(DEAD_ADDRESS, MINIMUM_LIQUIDITY);
         } else {
-            liquidity = SwapMath.min((amount0 * supply) / reserve0, (amount1 * supply) / reserve1);
+            liquidity = SwapMath.min(
+                (amount0 * supply) / reserve0,
+                (amount1 * supply) / reserve1
+            );
         }
 
-        require(liquidity > 0, "INSUFFICIENT_LIQUIDITY_MINTED");
+        require(liquidity > 0,            "INSUFFICIENT_LIQUIDITY_MINTED");
         require(liquidity >= minLiquidity, "MIN_LIQUIDITY");
 
         _mint(msg.sender, liquidity);
@@ -283,6 +223,7 @@ contract Pool is ERC20, ReentrancyGuard {
         emit AddLiquidity(msg.sender, amount0, amount1, liquidity);
     }
 
+    /// @notice Удаляет ликвидность из пула
     function removeLiquidity(
         uint256 liquidity,
         uint256 minAmount0,
@@ -294,9 +235,9 @@ contract Pool is ERC20, ReentrancyGuard {
         returns (uint256 amount0, uint256 amount1)
     {
         require(block.timestamp <= deadline, "EXPIRED");
+        require(liquidity > 0,              "ZERO_LIQUIDITY");
 
-        _updateTWAP();
-        require(liquidity > 0, "ZERO_LIQUIDITY");
+        _updateTwap();
 
         uint256 supply = totalSupply();
         require(supply > 0, "NO_SUPPLY");
@@ -304,17 +245,128 @@ contract Pool is ERC20, ReentrancyGuard {
         amount0 = (liquidity * reserve0) / supply;
         amount1 = (liquidity * reserve1) / supply;
 
-        require(amount0 > 0 && amount1 > 0, "INSUFFICIENT_OUTPUT");
-        require(amount0 >= minAmount0 && amount1 >= minAmount1, "MIN_OUTPUT");
+        require(amount0 > 0 && amount1 > 0,                       "INSUFFICIENT_OUTPUT");
+        require(amount0 >= minAmount0 && amount1 >= minAmount1,    "MIN_OUTPUT");
 
         _burn(msg.sender, liquidity);
 
         reserve0 -= amount0;
         reserve1 -= amount1;
 
-        token0.safeTransfer(msg.sender, amount0);
-        token1.safeTransfer(msg.sender, amount1);
+        TOKEN0.safeTransfer(msg.sender, amount0);
+        TOKEN1.safeTransfer(msg.sender, amount1);
 
         emit RemoveLiquidity(msg.sender, amount0, amount1, liquidity);
+    }
+
+    /// @dev Обновляет кумулятивные цены.
+    ///      Вызывается ДО изменения резервов — фиксирует цену начала блока.
+    ///      (fix: getTWAP → _updateTwap, mixedCase)
+    function _updateTwap() internal {
+        uint32 ts      = uint32(block.timestamp);
+        uint32 elapsed = ts - blockTimestampLast;
+
+        if (elapsed > 0 && reserve0 > 0 && reserve1 > 0) {
+            price0CumulativeLast += (reserve1 * 1e18 * elapsed) / reserve0;
+            price1CumulativeLast += (reserve0 * 1e18 * elapsed) / reserve1;
+        }
+
+        blockTimestampLast = ts;
+        _writeObservation(ts);
+    }
+
+    /// @dev Записывает наблюдение в кольцевой буфер.
+    ///      Если в этом блоке уже есть запись — не перезаписываем.
+    function _writeObservation(uint32 ts) internal {
+        if (observations[observationIndex].timestamp == ts) return;
+
+        uint16 next = (observationIndex + 1) % OBS_CARDINALITY;
+        observations[next] = Observation({
+            timestamp:        ts,
+            price0Cumulative: price0CumulativeLast,
+            price1Cumulative: price1CumulativeLast
+        });
+        observationIndex = next;
+        if (observationCount < OBS_CARDINALITY) observationCount++;
+    }
+
+    /// @dev Текущие кумулятивы с учётом времени с последнего обновления.
+    ///      fix: divide-before-multiply — умножаем ВСЁ до деления
+    function _currentCumulatives()
+        internal
+        view
+        returns (uint32 ts, uint256 cum0, uint256 cum1)
+    {
+        ts   = uint32(block.timestamp);
+        cum0 = price0CumulativeLast;
+        cum1 = price1CumulativeLast;
+
+        if (ts > blockTimestampLast && reserve0 > 0 && reserve1 > 0) {
+            uint32 dt = ts - blockTimestampLast;
+            // fix: divide-before-multiply
+            cum0 += (reserve1 * 1e18 * uint256(dt)) / reserve0;
+            cum1 += (reserve0 * 1e18 * uint256(dt)) / reserve1;
+        }
+    }
+
+    function _findObservation(uint32 currentTs, uint32 interval)
+        internal
+        view
+        returns (Observation memory target)
+    {
+        uint32 targetTs  = currentTs > interval ? currentTs - interval : 0;
+        uint16 count     = observationCount;
+        uint16 oldestIdx = count < OBS_CARDINALITY
+            ? 0
+            : (observationIndex + 1) % OBS_CARDINALITY;
+
+        target = observations[oldestIdx]; // fallback — самое раннее
+
+        uint16 lo = 0;
+        uint16 hi = count - 1;
+
+        while (lo <= hi) {
+            uint16 mid     = lo + (hi - lo) / 2;
+            uint16 realIdx = (oldestIdx + mid) % OBS_CARDINALITY;
+            Observation memory obs = observations[realIdx];
+
+            if (obs.timestamp <= targetTs) {
+                target = obs;
+                if (lo == hi) break;
+                lo = mid + 1;
+            } else {
+                if (mid == 0) break;
+                hi = mid - 1;
+            }
+        }
+    }
+
+    /// @dev Пропорциональный расчёт суммы депозита.
+    ///      Принимаем максимально возможное пропорциональное количество,
+    ///      не превышающее Desired и не ниже Min.
+    function _calcOptimalAmounts(
+        uint256 a0Desired,
+        uint256 a1Desired,
+        uint256 a0Min,
+        uint256 a1Min
+    )
+        internal
+        view
+        returns (uint256 a0, uint256 a1)
+    {
+        if (reserve0 == 0 && reserve1 == 0) {
+            return (a0Desired, a1Desired);
+        }
+
+        uint256 a1Optimal = (a0Desired * reserve1) / reserve0;
+        if (a1Optimal <= a1Desired) {
+            require(a1Optimal >= a1Min, "INSUFFICIENT_1_AMOUNT");
+            return (a0Desired, a1Optimal);
+        }
+
+        uint256 a0Optimal = (a1Desired * reserve0) / reserve1;
+        require(a0Optimal <= a0Desired, "AMOUNT0_EXCEEDS_DESIRED");
+        require(a0Optimal >= a0Min,     "INSUFFICIENT_0_AMOUNT");
+        return (a0Optimal, a1Desired);
     }
 }
