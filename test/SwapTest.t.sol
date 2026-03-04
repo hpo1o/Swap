@@ -11,10 +11,6 @@ import {ERC20FotMock} from "./mocks/ERC20FotMock.sol";
 import {MockChainlinkFeed} from "./mocks/MockChainlinkFeed.sol";
 import {Vm} from "forge-std/Vm.sol";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Handler — выполняет случайные операции с пулом для инвариантных тестов
-// ─────────────────────────────────────────────────────────────────────────────
-
 contract PoolHandler is Test {
     Pool        public pool;
     ERC20Mock   public tokenA;
@@ -31,7 +27,6 @@ contract PoolHandler is Test {
         tokenA = _tokenA;
         tokenB = _tokenB;
 
-        // создаём нескольких акторов
         for (uint256 i = 0; i < 3; i++) {
             address actor = makeAddr(string(abi.encodePacked("actor", i)));
             actors.push(actor);
@@ -51,7 +46,6 @@ contract PoolHandler is Test {
 
         (uint256 r0, uint256 r1) = pool.getReserves();
 
-        // подбираем пропорциональное amount1 если пул не пустой
         if (r0 > 0 && r1 > 0) {
             amount1 = (amount0 * r1) / r0;
             if (amount1 == 0) return;
@@ -120,7 +114,6 @@ contract InvariantPoolTest is StdInvariant, Test {
         tokenB   = new ERC20Mock("TokenB", "TKB", 18);
         pool     = new Pool(address(tokenA), address(tokenB), guardian);
 
-        // первый депозит от test contract
         tokenA.mint(address(this), 100_000e18);
         tokenB.mint(address(this), 100_000e18);
         tokenA.approve(address(pool), type(uint256).max);
@@ -131,7 +124,6 @@ contract InvariantPoolTest is StdInvariant, Test {
         targetContract(address(handler));
     }
 
-    /// @notice Резервы всегда совпадают с фактическими балансами пула
     function invariant_reservesMatchBalances() public view {
         (uint256 r0, uint256 r1) = pool.getReserves();
         address t0 = address(pool.TOKEN0());
@@ -147,14 +139,11 @@ contract InvariantPoolTest is StdInvariant, Test {
         );
     }
 
-    /// @notice k = reserve0 * reserve1 никогда не уменьшается
     function invariant_kNeverDecreases() public view {
         (uint256 r0, uint256 r1) = pool.getReserves();
-        // минимальное k после первого депозита 100k * 100k
         assertGe(r0 * r1, 100_000e18 * 100_000e18 - 1e36, "k decreased");
     }
 
-    /// @notice Суммарное supply LP-токенов > 0 пока есть резервы
     function invariant_lpSupplyPositive() public view {
         (uint256 r0, uint256 r1) = pool.getReserves();
         if (r0 > 0 && r1 > 0) {
@@ -162,7 +151,6 @@ contract InvariantPoolTest is StdInvariant, Test {
         }
     }
 
-    /// @notice MINIMUM_LIQUIDITY всегда заблокирован на dead address
     function invariant_minimumLiquidityLocked() public view {
         assertGe(
             pool.balanceOf(address(0xdead)),
@@ -220,18 +208,16 @@ contract PoolUnitTest is Test {
     }
 
     function test_addLiquidity_proportionalDeposit_noValueLeak() public {
-        // первый депозит
         vm.prank(alice);
         pool.addLiquidity(100_000e18, 100_000e18, 0, 0, 0, block.timestamp + 1);
 
         uint256 bobA_before = tokenA.balanceOf(bob);
         uint256 bobB_before = tokenB.balanceOf(bob);
 
-        // bob передаёт непропорционально: в два раза больше tokenB
         vm.prank(bob);
         pool.addLiquidity(
-            10_000e18,   // amount0Desired
-            50_000e18,   // amount1Desired — лишнее НЕ должно быть списано
+            10_000e18,   
+            50_000e18,   
             0, 0, 0,
             block.timestamp + 1
         );
@@ -242,7 +228,6 @@ contract PoolUnitTest is Test {
         uint256 spentA = bobA_before - bobA_after;
         uint256 spentB = bobB_before - bobB_after;
 
-        // списано пропорционально 1:1, не 1:5
         assertEq(spentA, 10_000e18, "wrong tokenA spent");
         assertEq(spentB, 10_000e18, "wrong tokenB spent value leaked");
     }
@@ -320,7 +305,6 @@ contract PoolUnitTest is Test {
         );
     }
 
-    /// @notice Инвариант k не нарушается после свапа
     function test_swap_kInvariant() public {
         vm.prank(alice);
         pool.addLiquidity(100_000e18, 100_000e18, 0, 0, 0, block.timestamp + 1);
@@ -337,10 +321,6 @@ contract PoolUnitTest is Test {
         assertGe(kAfter, kBefore, "k invariant broken");
     }
 
-    // ── fee accounting ────────────────────────────────────────────────────────
-
-    /// @notice Комиссия 0.3% остаётся в пуле — LP получают её при выводе
-// замени всю функцию на:
     function test_feeAccounting_feeAccruesToLp() public {
         vm.prank(alice);
         pool.addLiquidity(100_000e18, 100_000e18, 0, 0, 0, block.timestamp + 1);
@@ -348,7 +328,6 @@ contract PoolUnitTest is Test {
         address token0 = address(pool.TOKEN0());
         (uint256 r0Before,) = pool.getReserves();
 
-        // свапаем token0 → token1, reserve0 должен вырасти
         uint256 bigSwap = 50_000e18;
         ERC20Mock(token0).mint(bob, bigSwap);
         vm.startPrank(bob);
@@ -359,7 +338,6 @@ contract PoolUnitTest is Test {
         (uint256 r0After,) = pool.getReserves();
         assertGt(r0After, r0Before, "reserve0 should grow after swap of token0");
 
-        // alice выводит всю ликвидность
         uint256 lpBal = pool.balanceOf(alice);
         uint256 balBefore = ERC20Mock(token0).balanceOf(alice);
 
@@ -367,11 +345,8 @@ contract PoolUnitTest is Test {
         pool.removeLiquidity(lpBal, 0, 0, block.timestamp + 1);
 
         uint256 balAfter = ERC20Mock(token0).balanceOf(alice);
-        // alice получила обратно ~100k + часть комиссии от свапа
         assertGt(balAfter - balBefore, 99_000e18, "fee not accrued to LP");
     }
-
-    // ── removeLiquidity ───────────────────────────────────────────────────────
 
     function test_removeLiquidity_proportional() public {
         vm.prank(alice);
@@ -384,8 +359,6 @@ contract PoolUnitTest is Test {
         (uint256 a0, uint256 a1) = pool.removeLiquidity(
             half, 0, 0, block.timestamp + 1
         );
-
-        // пропорция должна сохраниться
         assertApproxEqRel(a1, a0 * 2, 1e15, "wrong proportion");
     }
 
@@ -426,17 +399,14 @@ contract PoolUnitTest is Test {
         pool.togglePause();
 
         vm.prank(guardian);
-        pool.togglePause(); // unpause
+        pool.togglePause();
 
-        // теперь своп должен работать
         vm.prank(bob);
         pool.swap(address(tokenA), 1e18, 0, bob, block.timestamp + 1);
     }
 
-    // ── fee-on-transfer protection ────────────────────────────────────────────
-
     function test_fot_revertOnFeeOnTransferToken() public {
-        tokenFot = new ERC20FotMock("FOT", "FOT", 18, 100); // 1% комиссия
+        tokenFot = new ERC20FotMock("FOT", "FOT", 18, 100); 
         Pool fotPool = new Pool(address(tokenFot), address(tokenB), guardian);
 
         tokenFot.mint(alice, 1_000_000e18);
@@ -448,7 +418,7 @@ contract PoolUnitTest is Test {
         vm.stopPrank();
 
         vm.prank(alice);
-        vm.expectRevert(); // FeeOnTransferToken
+        vm.expectRevert();
         fotPool.addLiquidity(
             100_000e18, 100_000e18, 0, 0, 0, block.timestamp + 1
         );

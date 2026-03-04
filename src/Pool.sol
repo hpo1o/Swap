@@ -251,7 +251,6 @@ contract Pool is ERC20, ReentrancyGuard {
         (uint256 reserveIn, uint256 reserveOut) =
             zeroForOne ? (reserve0, reserve1) : (reserve1, reserve0);
 
-        // FOT защита — проверяем фактически полученную сумму
         uint256 balBefore = IERC20(tokenIn).balanceOf(address(this));
         IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
         uint256 actualAmountIn = IERC20(tokenIn).balanceOf(address(this)) - balBefore;
@@ -306,7 +305,6 @@ contract Pool is ERC20, ReentrancyGuard {
             amount0Desired, amount1Desired, amount0Min, amount1Min
         );
 
-        // FOT защита для TOKEN0
         uint256 bal0Before = TOKEN0.balanceOf(address(this));
         TOKEN0.safeTransferFrom(msg.sender, address(this), amount0);
         uint256 actual0 = TOKEN0.balanceOf(address(this)) - bal0Before;
@@ -315,7 +313,6 @@ contract Pool is ERC20, ReentrancyGuard {
             revert FeeOnTransferToken(address(TOKEN0), amount0, actual0);
         }
 
-        // FOT защита для TOKEN1
         uint256 bal1Before = TOKEN1.balanceOf(address(this));
         TOKEN1.safeTransferFrom(msg.sender, address(this), amount1);
         uint256 actual1 = TOKEN1.balanceOf(address(this)) - bal1Before;
