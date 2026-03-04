@@ -7,31 +7,137 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
 import {Pool} from "./Pool.sol";
 
-/// @title  SwapExecutor — исполнитель чанкованных свапов с Oracle/TWAP защитой
-/// @dev    Исправления аудита:
-///         [H-3] minAmountOut рассчитывается для каждого чанка
-///         [H-4] Chainlink TWAP использует startedAt как границу раунда
-///         [L-2] Проверка to != address(0)
-///         [L-3] _validateToken возвращает только token0
 contract SwapExecutor is ReentrancyGuard {
     using SafeERC20 for IERC20;
+
+    // =========================================================================
+    // Constants
+    // =========================================================================
 
     uint256 public constant EXECUTOR_FEE_BPS              = 10;
     uint32  public constant DEFAULT_ORACLE_TWAP_INTERVAL  = 300;
     uint256 public constant DEFAULT_MAX_PRICE_DEV_BPS     = 500;
-    uint256 public constant DEFAULT_MAX_TWAP_SLIPPAGE_BPS = 1500;
+    uint256 public constant DEFAULT_MAX_TWAP_SLIPPAGE_BPS = 1_500;
     uint256 public constant DEFAULT_MAX_ORACLE_DELAY      = 1 hours;
-    uint256 private constant BPS_DENOM                    = 10_000;
+    uint256 public constant MAX_CHUNKS                    = 20;
+    uint256 public constant MIN_POOL_LIQUIDITY_THRESHOLD  = 1_000e18;
+    uint256 private constant BPS_DENOM                   = 10_000;
 
-    address public immutable feeRecipient;
-    AggregatorV3Interface public immutable chainlinkFeed;
+    // =========================================================================
+    // Immutables
+    // =========================================================================
 
-    constructor(address _feeRecipient, address _chainlinkFeed) {
-        require(_feeRecipient != address(0), "ZERO_FEE_RECIPIENT");
-        require(_chainlinkFeed != address(0), "ZERO_CHAINLINK_FEED");
-        feeRecipient  = _feeRecipient;
-        chainlinkFeed = AggregatorV3Interface(_chainlinkFeed);
+    // solhint-disable var-name-mixedcase
+    address public immutable FEE_RECIPIENT;
+    AggregatorV3Interface public immutable CHAINLINK_FEED;
+    address public immutable GUARDIAN;
+    // solhint-enable var-name-mixedcase
+
+    // =========================================================================
+    // State
+    // =========================================================================
+
+    bool public paused;
+
+    // =========================================================================
+    // Events
+    // =========================================================================
+
+    event SwapExecuted(
+        address indexed sender,
+        address indexed pool,
+        address tokenIn,
+        address tokenOut,
+        address indexed to,
+        uint256 totalAmountIn,
+        uint256 totalAmountOut,
+        uint256 feeAmount,
+        uint256 chunksUsed,
+        uint256 oraclePriceX18
+    );
+
+    event ChunkExecuted(
+        address indexed pool,
+        uint256 chunkIndex,
+        uint256 amountIn,
+        uint256 amountOut,
+        uint256 minAmountOut
+    );
+
+    event OracleChecked(
+        uint256 oraclePriceX18,
+        uint256 spotPriceX18,
+        uint256 deviationBps,
+        uint256 maxDeviationBps
+    );
+
+    event PauseToggled(address indexed guardian, bool paused);
+
+    // =========================================================================
+    // Errors
+    // =========================================================================
+
+    error Paused();
+    error NotGuardian();
+    error ZeroAddress();
+    error Expired();
+    error ZeroAmount();
+    error InvalidInterval();
+    error TotalSlippage(uint256 totalOut, uint256 minTotalOut);
+    error TwapSlippageTooHigh(uint256 totalOut, uint256 minAcceptable);
+    error PriceDeviationTooHigh(uint256 deviationBps, uint256 maxBps);
+    error TooManyChunks(uint256 chunks, uint256 maxChunks);
+    error PoolLiquidityTooLow(uint256 reserveIn, uint256 threshold);
+    error OracleNoData();
+    error OracleIncompleteRound();
+    error OracleBadPrice();
+    error OracleStale(uint256 age, uint256 maxDelay);
+    error OracleTwapNoWindow();
+
+    // =========================================================================
+    // Modifiers
+    // =========================================================================
+
+    modifier notPaused() {
+        if (paused) revert Paused();
+        _;
     }
+
+    modifier onlyGuardian() {
+        if (msg.sender != GUARDIAN) revert NotGuardian();
+        _;
+    }
+
+    // =========================================================================
+    // Constructor
+    // =========================================================================
+
+    constructor(
+        address _feeRecipient,
+        address _chainlinkFeed,
+        address _guardian
+    ) {
+        if (_feeRecipient  == address(0)) revert ZeroAddress();
+        if (_chainlinkFeed == address(0)) revert ZeroAddress();
+        if (_guardian      == address(0)) revert ZeroAddress();
+
+        FEE_RECIPIENT  = _feeRecipient;
+        CHAINLINK_FEED = AggregatorV3Interface(_chainlinkFeed);
+        GUARDIAN       = _guardian;
+    }
+
+    // =========================================================================
+    // Guardian
+    // =========================================================================
+
+    function togglePause() external onlyGuardian {
+        paused = !paused;
+        emit PauseToggled(msg.sender, paused);
+    }
+
+    // =========================================================================
+    // External
+    // =========================================================================
 
     function executeAutoChunkedSwap(
         Pool    pool,
@@ -40,7 +146,7 @@ contract SwapExecutor is ReentrancyGuard {
         uint256 minTotalOut,
         address to,
         uint256 deadline
-    ) external nonReentrant returns (uint256 totalOut) {
+    ) external nonReentrant notPaused returns (uint256 totalOut) {
         totalOut = _executeAutoChunkedSwapWithOracleTwap(
             pool, tokenIn, totalAmountIn, minTotalOut, to, deadline,
             DEFAULT_ORACLE_TWAP_INTERVAL,
@@ -61,7 +167,7 @@ contract SwapExecutor is ReentrancyGuard {
         uint256 maxPriceDeviationBps,
         uint256 maxTwapSlippageBps,
         uint256 maxOracleDelay
-    ) external nonReentrant returns (uint256 totalOut) {
+    ) external nonReentrant notPaused returns (uint256 totalOut) {
         totalOut = _executeAutoChunkedSwapWithOracleTwap(
             pool, tokenIn, totalAmountIn, minTotalOut, to, deadline,
             oracleTwapInterval, maxPriceDeviationBps,
@@ -69,7 +175,9 @@ contract SwapExecutor is ReentrancyGuard {
         );
     }
 
-    // ── internal core ────────────────────────────────────────────────────────
+    // =========================================================================
+    // Internal core
+    // =========================================================================
 
     function _executeAutoChunkedSwapWithOracleTwap(
         Pool    pool,
@@ -83,36 +191,59 @@ contract SwapExecutor is ReentrancyGuard {
         uint256 maxTwapSlippageBps,
         uint256 maxOracleDelay
     ) internal returns (uint256 totalOut) {
-        require(block.timestamp <= deadline, "EXPIRED");
-        require(totalAmountIn > 0, "ZERO_AMOUNT");
-        require(oracleTwapInterval > 0, "INVALID_INTERVAL");
-        require(to != address(0), "ZERO_TO_ADDRESS"); // [FIX L-2]
+        if (block.timestamp > deadline) revert Expired();
+        if (totalAmountIn == 0)         revert ZeroAmount();
+        if (oracleTwapInterval == 0)    revert InvalidInterval();
+        if (to == address(0))           revert ZeroAddress();
 
-        address token0 = _validateToken(pool, tokenIn); // [FIX L-3]
+        address token0 = _validateToken(pool, tokenIn);
 
         uint256 oracleTwapPriceX18 = _checkOracleDeviation(
             pool, token0, oracleTwapInterval, maxOracleDelay, maxPriceDeviationBps
         );
 
-        totalOut = _executeChunks(
-            pool, tokenIn, totalAmountIn, deadline, token0, oracleTwapPriceX18, maxTwapSlippageBps
+        (uint256 chunks, uint256 amountPerChunk) = _calcChunks(
+            pool, tokenIn, totalAmountIn, token0
         );
 
-        require(totalOut >= minTotalOut, "TOTAL_SLIPPAGE");
+        totalOut = _runChunkLoop(
+            pool, tokenIn, totalAmountIn, deadline,
+            token0, oracleTwapPriceX18, maxTwapSlippageBps,
+            chunks, amountPerChunk
+        );
+
+        if (totalOut < minTotalOut)
+            revert TotalSlippage(totalOut, minTotalOut);
 
         _checkTwapSlippage(
             tokenIn, token0, totalAmountIn, totalOut,
             oracleTwapPriceX18, maxTwapSlippageBps
         );
 
+        IERC20 tokenOutErc20 = pool.tokenOut(tokenIn);
         uint256 fee = (totalOut * EXECUTOR_FEE_BPS) / BPS_DENOM;
-        IERC20 tokenOutERC20 = pool.tokenOut(tokenIn);
 
-        if (fee > 0) tokenOutERC20.safeTransfer(feeRecipient, fee);
-        tokenOutERC20.safeTransfer(to, totalOut - fee);
+        if (fee > 0) tokenOutErc20.safeTransfer(FEE_RECIPIENT, fee);
+        tokenOutErc20.safeTransfer(to, totalOut - fee);
+
+        emit SwapExecuted(
+            msg.sender,
+            address(pool),
+            tokenIn,
+            address(tokenOutErc20),
+            to,
+            totalAmountIn,
+            totalOut - fee,
+            fee,
+            chunks,
+            oracleTwapPriceX18
+        );
     }
 
-    // [FIX L-3] возвращает только token0, token1 не нужен снаружи
+    // =========================================================================
+    // Internal helpers
+    // =========================================================================
+
     function _validateToken(Pool pool, address tokenIn)
         internal view returns (address token0)
     {
@@ -127,50 +258,75 @@ contract SwapExecutor is ReentrancyGuard {
         uint32  oracleTwapInterval,
         uint256 maxOracleDelay,
         uint256 maxPriceDeviationBps
-    ) internal view returns (uint256 oracleTwapPriceX18) {
+    ) internal returns (uint256 oracleTwapPriceX18) {
         oracleTwapPriceX18 = _chainlinkTwapX18(oracleTwapInterval, maxOracleDelay);
         uint256 spotPriceX18 = pool.getSpotPrice(token0);
 
         uint256 deviationBps =
             _absDiff(spotPriceX18, oracleTwapPriceX18) * BPS_DENOM / oracleTwapPriceX18;
-        require(deviationBps <= maxPriceDeviationBps, "PRICE_DEVIATION_TOO_HIGH");
+
+        emit OracleChecked(
+            oracleTwapPriceX18,
+            spotPriceX18,
+            deviationBps,
+            maxPriceDeviationBps
+        );
+
+        if (deviationBps > maxPriceDeviationBps)
+            revert PriceDeviationTooHigh(deviationBps, maxPriceDeviationBps);
     }
 
-    /// @dev [FIX H-3] Рассчитываем minAmountOut для каждого чанка через TWAP,
-    ///      а не только постфактум для всего объёма.
-    function _executeChunks(
+    function _calcChunks(
+        Pool    pool,
+        address tokenIn,
+        uint256 totalAmountIn,
+        address token0
+    ) internal view returns (uint256 chunks, uint256 amountPerChunk) {
+        (uint256 r0, uint256 r1) = pool.getReserves();
+        uint256 reserveIn = tokenIn == token0 ? r0 : r1;
+
+        if (reserveIn < MIN_POOL_LIQUIDITY_THRESHOLD)
+            revert PoolLiquidityTooLow(reserveIn, MIN_POOL_LIQUIDITY_THRESHOLD);
+
+        uint256 maxChunkSize = reserveIn / 10;
+        if (maxChunkSize == 0) maxChunkSize = totalAmountIn;
+
+        if (totalAmountIn <= maxChunkSize) {
+            chunks = 1;
+        } else {
+            chunks = totalAmountIn / maxChunkSize;
+            if (totalAmountIn % maxChunkSize != 0) chunks += 1;
+        }
+
+        if (chunks > MAX_CHUNKS) revert TooManyChunks(chunks, MAX_CHUNKS);
+
+        amountPerChunk = totalAmountIn / chunks;
+    }
+
+    function _runChunkLoop(
         Pool    pool,
         address tokenIn,
         uint256 totalAmountIn,
         uint256 deadline,
         address token0,
         uint256 oracleTwapPriceX18,
-        uint256 maxTwapSlippageBps
+        uint256 maxTwapSlippageBps,
+        uint256 chunks,
+        uint256 amountPerChunk
     ) internal returns (uint256 totalOut) {
-        (uint256 reserve0, uint256 reserve1) = pool.getReserves();
-        bool    zeroForOne  = tokenIn == token0;
-        uint256 reserveIn   = zeroForOne ? reserve0 : reserve1;
-
-        uint256 maxChunkSize = reserveIn / 10;
-        if (maxChunkSize == 0) maxChunkSize = totalAmountIn;
-
-        uint256 chunks = totalAmountIn / maxChunkSize;
-        if (totalAmountIn % maxChunkSize != 0) chunks += 1;
-
-        uint256 amountPerChunk = totalAmountIn / chunks;
+        bool zeroForOne = tokenIn == token0;
 
         IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), totalAmountIn);
         IERC20(tokenIn).safeIncreaseAllowance(address(pool), totalAmountIn);
 
         uint256 spent;
+
         for (uint256 i = 0; i < chunks; i++) {
             uint256 chunkAmount = i == chunks - 1
                 ? totalAmountIn - spent
                 : amountPerChunk;
             spent += chunkAmount;
 
-            // [FIX H-3] minAmountOut на уровне чанка — защита от манипуляций
-            // между итерациями (если дизайн расширится на мульти-блок)
             uint256 chunkExpectedOut = zeroForOne
                 ? (chunkAmount * oracleTwapPriceX18) / 1e18
                 : (chunkAmount * 1e18) / oracleTwapPriceX18;
@@ -178,8 +334,12 @@ contract SwapExecutor is ReentrancyGuard {
             uint256 chunkMinOut =
                 (chunkExpectedOut * (BPS_DENOM - maxTwapSlippageBps)) / BPS_DENOM;
 
-            uint256 out = pool.swap(tokenIn, chunkAmount, chunkMinOut, address(this), deadline);
+            uint256 out = pool.swap(
+                tokenIn, chunkAmount, chunkMinOut, address(this), deadline
+            );
             totalOut += out;
+
+            emit ChunkExecuted(address(pool), i, chunkAmount, out, chunkMinOut);
         }
     }
 
@@ -197,35 +357,35 @@ contract SwapExecutor is ReentrancyGuard {
 
         uint256 minAcceptable =
             (twapExpectedOut * (BPS_DENOM - maxTwapSlippageBps)) / BPS_DENOM;
-        require(totalOut >= minAcceptable, "TWAP_SLIPPAGE_TOO_HIGH");
+
+        if (totalOut < minAcceptable)
+            revert TwapSlippageTooHigh(totalOut, minAcceptable);
     }
 
-    /// @dev [FIX H-4] Правильная логика Chainlink TWAP.
-    ///      cursor = startedAt текущего раунда (начало), не updatedAt (конец).
-    ///      Это даёт корректные непересекающиеся временны́е окна раундов.
     function _chainlinkTwapX18(uint32 interval, uint256 maxOracleDelay)
         internal view returns (uint256 twapX18)
     {
         (
-            uint80 latestRoundId,
-            int256 latestAnswer,
+            uint80  latestRoundId,
+            int256  latestAnswer,
             uint256 latestStartedAt,
             uint256 latestUpdatedAt,
-            uint80 answeredInRound
-        ) = chainlinkFeed.latestRoundData();
+            uint80  answeredInRound
+        ) = CHAINLINK_FEED.latestRoundData();
 
-        require(latestStartedAt != 0,              "ORACLE_NO_DATA");
-        require(answeredInRound >= latestRoundId,   "ORACLE_INCOMPLETE_ROUND");
-        require(latestAnswer > 0,                   "ORACLE_BAD_PRICE");
-        require(latestUpdatedAt != 0,               "ORACLE_NO_DATA");
-        require(block.timestamp - latestUpdatedAt <= maxOracleDelay, "ORACLE_STALE");
+        if (latestStartedAt == 0 || latestUpdatedAt == 0) revert OracleNoData();
+        if (answeredInRound < latestRoundId)               revert OracleIncompleteRound();
+        if (latestAnswer <= 0)                             revert OracleBadPrice();
 
-        uint8   decimals    = chainlinkFeed.decimals();
+        uint256 age = block.timestamp - latestUpdatedAt;
+        if (age > maxOracleDelay) revert OracleStale(age, maxOracleDelay);
+
+        uint8   decimals    = CHAINLINK_FEED.decimals();
         uint256 weightedSum;
         uint256 totalWeight;
 
-        uint80  roundId    = latestRoundId;
-        uint256 cursor     = block.timestamp; // верхняя граница текущего окна
+        uint80  roundId     = latestRoundId;
+        uint256 cursor      = block.timestamp;
         uint256 targetStart = block.timestamp - interval;
 
         for (uint256 i = 0; i < 24; i++) {
@@ -234,12 +394,11 @@ contract SwapExecutor is ReentrancyGuard {
                 int256  answer,
                 uint256 startedAt,
                 uint256 updatedAt,
-            ) = chainlinkFeed.getRoundData(roundId);
+            ) = CHAINLINK_FEED.getRoundData(roundId);
 
             if (updatedAt == 0 || answer <= 0 || startedAt == 0) break;
 
             uint256 roundEnd   = cursor;
-            // [FIX H-4] Начало раунда — startedAt, не updatedAt
             uint256 roundStart = startedAt;
 
             if (roundEnd <= targetStart) break;
@@ -252,13 +411,11 @@ contract SwapExecutor is ReentrancyGuard {
             }
 
             if (id == 0) break;
-            // [FIX H-4] cursor сдвигается к startedAt текущего раунда —
-            // это нижняя граница окна, она же верхняя граница следующего
             cursor  = startedAt;
             roundId = id - 1;
         }
 
-        require(totalWeight > 0, "ORACLE_TWAP_NO_WINDOW");
+        if (totalWeight == 0) revert OracleTwapNoWindow();
         twapX18 = weightedSum / totalWeight;
     }
 
